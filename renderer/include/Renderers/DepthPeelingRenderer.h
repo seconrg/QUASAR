@@ -23,8 +23,9 @@ public:
 
     virtual void resize(uint width, uint height) override;
 
+    virtual RenderStats drawSceneByLayer(Scene& scene, const Camera& camera, uint32_t layerIndex, uint32_t clearMask);
     virtual RenderStats drawScene(Scene& scene, const Camera& camera, uint32_t clearMask = GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT) override;
-    virtual RenderStats drawObjects(Scene& scene, const Camera& camera, uint32_t clearMask = GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT) override;
+    virtual RenderStats drawObjects(Scene& scene, const Camera& camera, bool renderFrontEnd = true, uint32_t clearMask = GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     virtual RenderStats drawObjectsNoLighting(Scene& scene, const Camera& camera, uint32_t clearMask = GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT) override;
 
     RenderStats compositeLayers();

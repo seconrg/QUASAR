@@ -102,11 +102,16 @@ int main(int argc, char** argv) {
     DepthPeelingRenderer remoteRendererDP(config, maxLayers - 1, true); // DP layers doesn't include wide fov
     DeferredRenderer remoteRenderer(config);
 
+    double totalProxyGenerationTimeMs = 0.0;
+    double totalFrameGenerationTimeMS = 0.0;
+    double totalCompressionTimeMs = 0.0;
+
     // "Remote" scene
     Scene remoteScene;
     PerspectiveCamera remoteCamera(remoteRendererDP.width, remoteRendererDP.height);
     SceneLoader loader;
     loader.loadScene(sceneFile, remoteScene, remoteCamera);
+    remoteScene.envCubeMap = nullptr;
 
     float remoteFOV = args::get(remoteFOVIn);
     remoteCamera.setFovyDegrees(remoteFOV);
@@ -209,6 +214,9 @@ int main(int argc, char** argv) {
         static bool showFramePreviewWindows = false;
         static bool showLayerPreviews = false;
         static bool saveAsSeparate = true;
+
+        static bool showSkyBox = false;
+        localScene.envCubeMap = showSkyBox ? remoteScene.envCubeMap : nullptr;
 
         ImGui::BeginMainMenuBar();
         if (ImGui::BeginMenu("File")) {
@@ -456,6 +464,7 @@ int main(int argc, char** argv) {
     double lastRenderTime = -INFINITY;
     bool updateClient = !saveImages;
     int frameCounter = 0;
+    localScene.envCubeMap = nullptr;
     app.onRender([&](double now, double dt) {
         // Handle mouse input
         if (!(ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantCaptureMouse)) {
@@ -533,9 +542,12 @@ int main(int argc, char** argv) {
                 }
                 // If we do not have a new pose, just send a new frame with the old pose
             }
-
+            spdlog::info("Generating new frame at time {:.3f}s (sendReferenceFrame={}, sendResidualFrame={})",
+                         now, sendReferenceFrame, sendResidualFrame);
             quasar.generateFrame(sendResidualFrame, showNormals, showDepth);
             quasar.sendFrame(-1, sendResidualFrame);
+
+            quasar.writeToFiles(outputPath, frameCounter); // for debugging
 
             std::string frameType = sendReferenceFrame ? "Reference Frame" : "Residual Frame";
             spdlog::info("======================================================");
@@ -552,6 +564,19 @@ int main(int argc, char** argv) {
             spdlog::info("Frame Size: {:.3f}MB", quasar.stats.frameSize / BYTES_PER_MEGABYTE);
             spdlog::info("Num Proxies: {}Proxies", quasar.stats.proxySizes.numQuads);
 
+            totalCompressionTimeMs += quasar.stats.totalCompressTimeMs;
+            totalProxyGenerationTimeMs += quasar.stats.totalCreateProxiesTimeMs;
+            totalFrameGenerationTimeMS += quasar.stats.totalRenderTimeMs;
+
+            spdlog::info("======================================================");
+            spdlog::info("Total Stats over {} frames:", frameCounter);
+            spdlog::info("Total Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS);
+            spdlog::info("Total Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs);
+            spdlog::info("Total Compression Time: {:.3f}ms", totalCompressionTimeMs);
+            spdlog::info("Average Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS / (frameCounter > 0 ? frameCounter : 1));
+            spdlog::info("Average Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs / (frameCounter > 0 ? frameCounter : 1));
+            spdlog::info("Average Compression Time: {:.3f}ms", totalCompressionTimeMs / (frameCounter > 0 ? frameCounter : 1));
+            
             showResidualFrame = sendResidualFrame;
             preventCopyingLocalPose = false;
             sendReferenceFrame = false;
@@ -608,6 +633,16 @@ int main(int argc, char** argv) {
         holeFiller.setDepthThreshold(quadsGenerator->params.depthThreshold);
         holeFiller.drawToScreen(renderer);
         if (!updateClient) {
+
+            // print out the stats
+            spdlog::info("======================================================");
+            spdlog::info("Total Stats over {} frames:", frameCounter);
+            spdlog::info("Total Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS);
+            spdlog::info("Total Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs);
+            spdlog::info("Total Compression Time: {:.3f}ms", totalCompressionTimeMs);
+            spdlog::info("Average Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS / (frameCounter > 0 ? frameCounter : 1));
+            spdlog::info("Average Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs / (frameCounter > 0 ? frameCounter : 1));
+            spdlog::info("Average Compression Time: {:.3f}ms", totalCompressionTimeMs / (frameCounter > 0 ? frameCounter : 1));
             return;
         }
         if (cameraAnimator.running) {

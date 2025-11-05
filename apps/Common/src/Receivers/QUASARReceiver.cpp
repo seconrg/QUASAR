@@ -2,13 +2,23 @@
 
 using namespace quasar;
 
-QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::string& videoURL, const std::string& proxiesURL)
+QUASARReceiver::QUASARReceiver(QuadSet& quadSet, 
+                               DepthPeelingRenderer& remoteRendererDP,
+                               DeferredRenderer& remoteRenderer,
+                               Scene& remoteScene,
+                               uint maxLayers, 
+                               const std::string& videoURL, 
+                               const std::string& proxiesURL)
     : quadSet(quadSet)
     , maxLayers(maxLayers)
+    , remoteRendererDP(remoteRendererDP)
+    , remoteRenderer(remoteRenderer)
+    , remoteScene(remoteScene)
     , videoURL(videoURL)
     , proxiesURL(proxiesURL)
     , remoteCamera(quadSet.getSize())
     , remoteCameraWideFOV(quadSet.getSize())
+    , frameGenerator(quadSet)
     , videoAtlasTexture({
         .width = 2 * quadSet.getSize().x,
         .height = 3 * quadSet.getSize().y,
@@ -62,6 +72,26 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::stri
     framePending = std::make_shared<Frame>(bufferPool);
 
     frameFree = framePending;
+
+    uint numHidLayers = maxLayers - 1;
+    frameRTsHidLayer_noTone.reserve(numHidLayers);
+
+    // Setup hidden layers and wide fov RTs
+    RenderTargetCreateParams rtParams = {
+        .width = quadSet.getSize().x,
+        .height = quadSet.getSize().y,
+        .internalFormat = GL_RGBA16F,
+        .format = GL_RGBA,
+        .type = GL_HALF_FLOAT,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+        .minFilter = GL_NEAREST,
+        .magFilter = GL_NEAREST,
+    };
+    for (int layer = 0; layer < numHidLayers; layer++) {
+        frameRTsHidLayer_noTone.emplace_back(rtParams);
+    }
+
     cv.notify_one();
 
     threadPool = std::make_unique<BS::thread_pool<>>(4);
@@ -73,9 +103,12 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::stri
 
 QUASARReceiver::QUASARReceiver(
         QuadSet& quadSet,
+        DepthPeelingRenderer& remoteRendererDP,
+        DeferredRenderer& remoteRenderer,
+        Scene& remoteScene,
         uint maxLayers, float remoteFOV, float remoteFOVWide,
         const std::string& videoURL, const std::string& proxiesURL)
-    : QUASARReceiver(quadSet, maxLayers, videoURL, proxiesURL)
+        : QUASARReceiver(quadSet, remoteRendererDP, remoteRenderer, remoteScene, maxLayers, videoURL, proxiesURL)
 {
     remoteCamera.setFovyDegrees(remoteFOV);
     remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
@@ -157,6 +190,61 @@ QuadFrame::FrameType QUASARReceiver::recvData() {
     cv.notify_one();
 
     return frameType;
+}
+
+RenderStats QUASARReceiver::generateFrame(bool createResidualFrame, bool showNormals, bool showDepth) {
+    stats = { 0 };
+
+    spdlog::info("Generating frame with {} hidden layers", maxLayers - 2);
+
+    // Render local scenes
+    // Where should we get the remote Scene from?
+
+    auto quadsGenerator = frameGenerator.getQuadsGenerator();
+    
+    double renderStartTime = timeutils::getTimeMicros();
+    RenderStats renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera, false);
+    stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - renderStartTime);
+    int numLayers = maxLayers;
+    for (int layer = 1; layer < numLayers-1; layer++) {
+
+        int hiddenLayerIndex = layer - 1;
+        auto& cameraToUse = (layer != maxLayers - 1) ? remoteCamera : remoteCameraWideFOV;
+        auto& frameToUse_noTone = frameRTsHidLayer_noTone[hiddenLayerIndex];
+        auto& meshToUse = meshes[layer];
+
+        double startTime = timeutils::getTimeMicros();
+        remoteRendererDP.peelingLayers[layer].blit(frameToUse_noTone);
+
+        stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+        // Generate reference frame 
+        auto oldParams = quadsGenerator->params;
+        quadsGenerator->params.depthThreshold = 1e-3f;
+        quadsGenerator->params.maxIterForceMerge = 4;
+        quadsGenerator->params.expandEdges = false;
+
+        frameGenerator.createReferenceFrame(
+            frameToUse_noTone, 
+            cameraToUse,
+            meshToUse,
+            referenceFrames[layer]
+        );
+
+        stats.totalCreateMeshTimeMs += frameGenerator.stats.createMeshTimeMs;
+        stats.totalCreateProxiesTimeMs += frameGenerator.stats.createQuadsTimeMs;
+        spdlog::info("    Layer {}: Created reference proxies in {} ms", 
+                     layer, frameGenerator.stats.createQuadsTimeMs);
+        spdlog::info("    Layer {}: Created reference frame mesh in {} ms", 
+                     layer, frameGenerator.stats.createMeshTimeMs);
+        
+        tonemapper.setUniforms(frameToUse_noTone);
+        tonemapper.drawToRenderTarget(remoteRenderer, frameToUse_noTone, false);
+        quadsGenerator->params = oldParams;
+
+    }
+    spdlog::info("Total render time ms: {}", stats.totalRenderTimeMs);
+    spdlog::info("Total create mesh time ms: {}", stats.totalCreateMeshTimeMs);
+    return renderStats;
 }
 
 QuadFrame::FrameType QUASARReceiver::loadFromFiles(const Path& dataPath) {
@@ -308,6 +396,7 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
 
         layerPtr += sizeof(uint32_t) + layerSize;
     }
+    // copy hidden layers from 
     // Hidden layers and wide FOV
     for (int layer = 1; layer < maxLayers; layer++) {
         std::memcpy(&layerSize, layerPtr, sizeof(uint32_t));
@@ -411,6 +500,8 @@ QuadFrame::FrameType QUASARReceiver::reconstructFrame(std::shared_ptr<Frame> fra
     }
 
     // Reconstruct hidden layers and wide FOV
+    // Temporarily disable for performance testing
+    /*
     for (int layer = 1; layer < maxLayers; layer++) {
         auto sizes = quadSet.loadFromMemory(bufferPool.uncompressedQuads[layer], bufferPool.uncompressedOffsets[layer]);
         referenceFrames[layer].numQuads = sizes.numQuads;
@@ -426,7 +517,7 @@ QuadFrame::FrameType QUASARReceiver::reconstructFrame(std::shared_ptr<Frame> fra
         auto meshBufferSizes = meshes[layer].getBufferSizes();
         stats.totalTriangles += meshBufferSizes.numIndices / 3;
         stats.sizes += sizes;
-    }
+    }*/
 
     return frame->frameType;
 }
