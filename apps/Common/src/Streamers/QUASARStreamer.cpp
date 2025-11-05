@@ -305,7 +305,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     
     // we only do layer 0 and the last layer (wide FOV)
     // for (int layer = 0; layer < numLayers; layer+=numLayers-1) {
-    for (int layer = 0; layer < numLayers; layer+=numLayers-1) {
+    for (int layer = 0; layer < numLayers; layer += numLayers-1) {
         int hiddenLayerIndex = layer - 1;
 
         auto& remoteCameraToUse = (layer == 0 && createResidualFrame)
@@ -576,7 +576,6 @@ void QUASARStreamer::writeTexturesToFiles(const Path& outputPath) {
 
 size_t QUASARStreamer::writeToFiles(const Path& outputPath, int frameCounter) {
     // Save camera data
-    spdlog::info("Writing output data to folder: {}", outputPath.c_str());
     // Pose cameraPose;
     // Path cameraFileName = outputPath / "camera.bin";
     // cameraPose.setProjectionMatrix(remoteCamera.getProjectionMatrix());
@@ -596,10 +595,7 @@ size_t QUASARStreamer::writeToFiles(const Path& outputPath, int frameCounter) {
     // };
     // FileIO::writeToBinaryFile(outputPath / "metadata.bin", &params, sizeof(params));
 
-    // Save color
-    Path colorFileName = outputPath / "color.jpg";
-    atlasVideoStreamerRT.writeColorAsJPG(colorFileName);
-
+    writeTexturesToFiles(outputPath);
     // Save proxies
     size_t totalOutputSize = 0;
     for (int layer = 0; layer < maxLayers; layer++) {

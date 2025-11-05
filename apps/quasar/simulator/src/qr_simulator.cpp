@@ -111,7 +111,7 @@ int main(int argc, char** argv) {
     PerspectiveCamera remoteCamera(remoteRendererDP.width, remoteRendererDP.height);
     SceneLoader loader;
     loader.loadScene(sceneFile, remoteScene, remoteCamera);
-    remoteScene.envCubeMap = nullptr;
+    remoteScene.setEnvMap(nullptr);
 
     float remoteFOV = args::get(remoteFOVIn);
     remoteCamera.setFovyDegrees(remoteFOV);
@@ -216,7 +216,6 @@ int main(int argc, char** argv) {
         static bool saveAsSeparate = true;
 
         static bool showSkyBox = false;
-        localScene.envCubeMap = showSkyBox ? remoteScene.envCubeMap : nullptr;
 
         ImGui::BeginMainMenuBar();
         if (ImGui::BeginMenu("File")) {
@@ -420,7 +419,7 @@ int main(int argc, char** argv) {
                     quasar.writeTexturesToFiles(outputPath);
                 }
                 else {
-                    spdlog::info("Saved {} bytes to {}", quasar.writeToFiles(outputPath), outputPath.absolutePathStr());
+                    spdlog::info("Saved {} bytes to {}", quasar.writeToFiles(outputPath, 0), outputPath.absolutePathStr());
                 }
             }
 
@@ -464,7 +463,6 @@ int main(int argc, char** argv) {
     double lastRenderTime = -INFINITY;
     bool updateClient = !saveImages;
     int frameCounter = 0;
-    localScene.envCubeMap = nullptr;
     app.onRender([&](double now, double dt) {
         // Handle mouse input
         if (!(ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantCaptureMouse)) {
@@ -635,14 +633,14 @@ int main(int argc, char** argv) {
         if (!updateClient) {
 
             // print out the stats
-            spdlog::info("======================================================");
-            spdlog::info("Total Stats over {} frames:", frameCounter);
-            spdlog::info("Total Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS);
-            spdlog::info("Total Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs);
-            spdlog::info("Total Compression Time: {:.3f}ms", totalCompressionTimeMs);
-            spdlog::info("Average Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS / (frameCounter > 0 ? frameCounter : 1));
-            spdlog::info("Average Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs / (frameCounter > 0 ? frameCounter : 1));
-            spdlog::info("Average Compression Time: {:.3f}ms", totalCompressionTimeMs / (frameCounter > 0 ? frameCounter : 1));
+            // spdlog::info("======================================================");
+            // spdlog::info("Total Stats over {} frames:", frameCounter);
+            // spdlog::info("Total Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS);
+            // spdlog::info("Total Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs);
+            // spdlog::info("Total Compression Time: {:.3f}ms", totalCompressionTimeMs);
+            // spdlog::info("Average Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS / (frameCounter > 0 ? frameCounter : 1));
+            // spdlog::info("Average Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs / (frameCounter > 0 ? frameCounter : 1));
+            // spdlog::info("Average Compression Time: {:.3f}ms", totalCompressionTimeMs / (frameCounter > 0 ? frameCounter : 1));
             return;
         }
         if (cameraAnimator.running) {
