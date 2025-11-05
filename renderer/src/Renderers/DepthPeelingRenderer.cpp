@@ -62,59 +62,69 @@ void DepthPeelingRenderer::setScreenShaderUniforms(const Shader& screenShader) {
     screenShader.setTexture("idTexture", gBuffer.idTexture, 4);
 }
 
-RenderStats DepthPeelingRenderer::drawScene(Scene& scene, const Camera& camera, uint32_t clearMask) {
+RenderStats DepthPeelingRenderer::drawSceneByLayer(Scene& scene, const Camera& camera, uint32_t layerIndex, uint32_t clearMask)
+{
     RenderStats stats;
 
-    for (int layer = 0; layer < maxLayers; layer++) {
-        beginRendering();
-        if (clearMask != 0) {
-            gBuffer.clear(clearMask);
-        }
+    beginRendering();
+    if (clearMask != 0) {
+        gBuffer.clear(clearMask);
+    }
+    uint layer = layerIndex;
 
-        // Disable blending
-        pipeline.blendState.blendEnabled = false; pipeline.apply();
+    // Disable blending
+    pipeline.blendState.blendEnabled = false; pipeline.apply();
 
-        const Texture* prevIDMap = (layer >= 1) ? &peelingLayers[layer-1].idTexture : nullptr;
+    const Texture* prevIDMap = (layer >= 1) ? &peelingLayers[layer-1].idTexture : nullptr;
 
-        // Set layer index in shaders
-        if (LitMaterial::deferredShader != nullptr) {
-            LitMaterial::deferredShader->bind();
-            LitMaterial::deferredShader->setInt("layerIndex", layer);
-        }
-        if (LitMaterial::forwardShader != nullptr) {
-            LitMaterial::forwardShader->bind();
-            LitMaterial::forwardShader->setInt("layerIndex", layer);
-        }
-        if (UnlitMaterial::shader != nullptr) {
-            UnlitMaterial::shader->bind();
-            UnlitMaterial::shader->setInt("layerIndex", layer);
-        }
+    // Set layer index in shaders
+    if (LitMaterial::deferredShader != nullptr) {
+        LitMaterial::deferredShader->bind();
+        LitMaterial::deferredShader->setInt("layerIndex", layer);
+    }
+    if (LitMaterial::forwardShader != nullptr) {
+        LitMaterial::forwardShader->bind();
+        LitMaterial::forwardShader->setInt("layerIndex", layer);
+    }
+    if (UnlitMaterial::shader != nullptr) {
+        UnlitMaterial::shader->bind();
+        UnlitMaterial::shader->setInt("layerIndex", layer);
+    }
 
-        // Render scene
-        for (auto* child : scene.children) {
-            stats += drawNodeImmediate(scene, camera, child, glm::mat4(1.0f), true, nullptr, prevIDMap);
-        }
+    // Render scene
+    for (auto* child : scene.children) {
+        stats += drawNodeImmediate(scene, camera, child, glm::mat4(1.0f), true, nullptr, prevIDMap);
+    }
 
-        // Re-enable blending
-        pipeline.blendState.blendEnabled = true; pipeline.apply();
+    // Re-enable blending
+    pipeline.blendState.blendEnabled = true; pipeline.apply();
 
-        endRendering();
+    endRendering();
 
-        // Draw lighting pass
-        stats += lightingPass(scene, camera);
+    // Draw lighting pass
+    stats += lightingPass(scene, camera);
 
-        // Draw skybox (only in last layer)
-        if (layer == maxLayers - 1) {
-            stats += drawSkyBox(scene, camera);
-        }
+    // Draw skybox (only in last layer)
+    if (layer == maxLayers - 1) {
+        stats += drawSkyBox(scene, camera);
+    }
 
-        copyToFrameRT(peelingLayers[layer]);
+    copyToFrameRT(peelingLayers[layer]);
+
+    return stats;
+}
+
+RenderStats DepthPeelingRenderer::drawScene(Scene& scene, const Camera& camera, uint32_t clearMask) {
+    RenderStats stats;
+        
+    for (int i = 0; i < maxLayers; i++) {
+        stats += drawSceneByLayer(scene, camera, i,clearMask);
     }
 
     return stats;
 }
 
-RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera, uint32_t clearMask) {
+RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera, bool renderFrontEnd, uint32_t clearMask) {
     RenderStats stats;
     if (camera.isVR()) {
         auto* vrCamera = static_cast<const VRCamera*>(&camera);
@@ -163,7 +173,13 @@ RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera
         updatePointLightShadows(scene, camera);
 
         // Draw all objects in the scene
-        stats += drawScene(scene, camera, clearMask);
+        if (renderFrontEnd) {
+            stats += drawScene(scene, camera, clearMask);
+        } else {
+            for (int i = 1; i < maxLayers; i++) {
+                stats += drawSceneByLayer(scene, camera, i,clearMask);
+            }
+        }
 
         // Draw lights for debugging
         stats += drawLights(scene, camera);

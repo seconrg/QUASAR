@@ -394,17 +394,25 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         stats.totalGatherQuadsTime += frameGenerator.stats.gatherQuadsTimeMs;
         stats.totalCreateProxiesTimeMs += frameGenerator.stats.createQuadsTimeMs;
 
+        spdlog::info("    Layer {}: Created reference proxies in {} ms", 
+                     layer, frameGenerator.stats.createQuadsTimeMs);
+        spdlog::info("    Layer {}: Created reference frame mesh in {} ms", 
+                     layer, frameGenerator.stats.createMeshTimeMs);
+        
+
         stats.totalAppendQuadsTimeMs += frameGenerator.stats.appendQuadsTimeMs;
         stats.totalCreateVertIndTimeMs += frameGenerator.stats.createVertIndTimeMs;
         stats.totalCreateMeshTimeMs += frameGenerator.stats.createMeshTimeMs;
 
         if (!createResidualFrame || layer != 0) {
+            spdlog::info("    Layer {}: compressed reference frame in {} ms", 
+                          layer, frameGenerator.stats.compressTimeMs);
             stats.totalCompressTimeMs += frameGenerator.stats.compressTimeMs;
         }
 
         /*
         ============================
-        Generate Residual Frame
+        Generate Residual Frame, especially for layer 0
         ============================
         */
         if (layer == 0) {
@@ -471,7 +479,8 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
             meshToUseDepth.update((layer != maxLayers - 1) ? remoteCamera : remoteCameraWideFOV, renderTargetToUse);
             stats.totalGenDepthTimeMs += meshToUseDepth.stats.genDepthTime;
         }
-
+        
+        // if it is not creating residual frame or it is not the first layer, accumulate sizes
         if (!(createResidualFrame && layer == 0)) {
             stats.proxySizes.numQuads += referenceFrames[layer].getTotalNumQuads();
             stats.proxySizes.numDepthOffsets += referenceFrames[layer].getTotalNumDepthOffsets();
@@ -565,28 +574,31 @@ void QUASARStreamer::writeTexturesToFiles(const Path& outputPath) {
     alphaAtlasRT.writeAlphaAsPNG(alphaFileName);
 }
 
-size_t QUASARStreamer::writeToFiles(const Path& outputPath) {
+size_t QUASARStreamer::writeToFiles(const Path& outputPath, int frameCounter) {
     // Save camera data
-    Pose cameraPose;
-    Path cameraFileName = outputPath / "camera.bin";
-    cameraPose.setProjectionMatrix(remoteCamera.getProjectionMatrix());
-    cameraPose.setViewMatrix(remoteCamera.getViewMatrix());
-    cameraPose.writeToFile(cameraFileName);
+    spdlog::info("Writing output data to folder: {}", outputPath.c_str());
+    // Pose cameraPose;
+    // Path cameraFileName = outputPath / "camera.bin";
+    // cameraPose.setProjectionMatrix(remoteCamera.getProjectionMatrix());
+    // cameraPose.setViewMatrix(remoteCamera.getViewMatrix());
+    // cameraPose.writeToFile(cameraFileName);
 
-    Path cameraFileNamePrev = outputPath / "camera_prev.bin";
-    cameraPose.setProjectionMatrix(remoteCameraPrev.getProjectionMatrix());
-    cameraPose.setViewMatrix(remoteCameraPrev.getViewMatrix());
-    cameraPose.writeToFile(cameraFileNamePrev);
+    // Path cameraFileNamePrev = outputPath / "camera_prev.bin";
+    // cameraPose.setProjectionMatrix(remoteCameraPrev.getProjectionMatrix());
+    // cameraPose.setViewMatrix(remoteCameraPrev.getViewMatrix());
+    // cameraPose.writeToFile(cameraFileNamePrev);
 
-    // Save metadata (viewSphereDiameter and wide FOV)
-    QUASARReceiver::Params params = {
-        .numLayers = static_cast<uint32_t>(geometryMetadatas.size()),
-        .viewSphereDiameter = viewSphereDiameter,
-        .wideFOV = remoteCameraWideFOV.getFovyDegrees(),
-    };
-    FileIO::writeToBinaryFile(outputPath / "metadata.bin", &params, sizeof(params));
+    // // Save metadata (viewSphereDiameter and wide FOV)
+    // QUASARReceiver::Params params = {
+    //     .numLayers = static_cast<uint32_t>(geometryMetadatas.size()),
+    //     .viewSphereDiameter = viewSphereDiameter,
+    //     .wideFOV = remoteCameraWideFOV.getFovyDegrees(),
+    // };
+    // FileIO::writeToBinaryFile(outputPath / "metadata.bin", &params, sizeof(params));
 
-    writeTexturesToFiles(outputPath);
+    // Save color
+    // Path colorFileName = outputPath / "color.jpg";
+    // atlasVideoStreamerRT.writeColorAsJPG(colorFileName);
 
     // Save proxies
     size_t totalOutputSize = 0;
@@ -594,6 +606,8 @@ size_t QUASARStreamer::writeToFiles(const Path& outputPath) {
         totalOutputSize += referenceFrames[layer].writeToFiles(outputPath, layer);
     }
     totalOutputSize += residualFrame.writeToFiles(outputPath);
+
+    spdlog::debug("Written output data size: {}", totalOutputSize);
     return totalOutputSize;
 }
 
@@ -618,12 +632,16 @@ size_t QUASARStreamer::writeToMemory(pose_id_t poseID, bool writeResidualFrame, 
         residualFrame.writeToMemory(geometryMetadatas[0]);
     }
     // Save hidden layers and wide FOV
-    for (int layer = 1; layer < maxLayers; layer++) {
+
+    // skip saving all hidden layers except the last one (wide FOV)
+    for (int layer = 1; layer < maxLayers-1; layer++) {
         referenceFrames[layer].writeToMemory(geometryMetadatas[layer]);
     }
+    referenceFrames[maxLayers-1].writeToMemory(geometryMetadatas[maxLayers-1]);
 
     uint32_t geometrySize = 0;
     for (const auto& layerData : geometryMetadatas) {
+        spdlog::info("Geometry layer size: {} bytes", layerData.size());
         geometrySize += sizeof(uint32_t) + static_cast<uint32_t>(layerData.size());
     }
 

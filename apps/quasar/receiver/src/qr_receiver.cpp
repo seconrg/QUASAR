@@ -88,6 +88,9 @@ int main(int argc, char** argv) {
     OpenGLApp app(config);
     ForwardRenderer renderer(config);
 
+    DepthPeelingRenderer remoteRendererDP(config, maxLayers - 1, true);
+    DeferredRenderer remoteRenderer(config);
+
     Scene scene;
     PerspectiveCamera camera(windowSize);
 
@@ -107,7 +110,7 @@ int main(int argc, char** argv) {
     }, renderer, tonemapper, dataPath, config.targetFramerate);
 
     QuadSet quadSet(windowSize);
-    QUASARReceiver quasarReceiver(quadSet, maxLayers, videoURL, proxiesURL);
+    QUASARReceiver quasarReceiver(quadSet, remoteRendererDP, remoteRenderer, scene, maxLayers, videoURL, proxiesURL);
 
     PoseStreamer poseStreamer(&camera, poseURL);
 
@@ -327,6 +330,9 @@ int main(int argc, char** argv) {
         // Send pose to streamer
         pose_id_t currPoseID = poseStreamer.sendPose();
         poseStreamer.removePosesLessThan(currPoseID);
+        // start rendering here before receiving new data to hide latency
+ 
+        renderStats = quasarReceiver.generateFrame(true, false, false);
 
         QuadFrame::FrameType frameType = quasarReceiver.recvData();
         if (frameType != QuadFrame::FrameType::NONE) {

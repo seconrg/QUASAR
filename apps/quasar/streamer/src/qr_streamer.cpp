@@ -132,9 +132,9 @@ int main(int argc, char** argv) {
     bool showResidualFrame = false;
     int refFrameInterval = 2;
 
-    const double serverFPSValues[] = {0, 1, 2, 3, 4, 5};
-    const char* serverFPSLabels[] = {"0 FPS", "1 FPS", "2 FPS", "3 FPS", "4 FPS", "5 FPS"};
-    int serverFPSIndex = 1; // default to 1 FPS
+    const double serverFPSValues[] = {0, 1, 5, 10, 15, 30};
+    const char* serverFPSLabels[] = {"0 FPS", "1 FPS", "5 FPS", "10 FPS", "15 FPS", "30 FPS"};
+    int serverFPSIndex = 5; // default to 30 FPS
     double rerenderIntervalMs = serverFPSIndex == 0 ? 0.0 : MILLISECONDS_IN_SECOND / serverFPSValues[serverFPSIndex];
 
     bool* showLayers = new bool[maxLayers];
@@ -344,6 +344,7 @@ int main(int argc, char** argv) {
     double totalDT = 0.0;
     double lastRenderTime = -INFINITY;
     int frameCounter = 0;
+    double lastSendTime = timeutils::getTimeMicros();
     app.onRender([&](double now, double dt) {
         // Handle keyboard input
         auto keys = window->getKeys();
@@ -353,9 +354,12 @@ int main(int argc, char** argv) {
         totalDT += dt;
 
         if (rerenderIntervalMs > 0.0 && (now - lastRenderTime) >= timeutils::millisToSeconds(rerenderIntervalMs - 1.0)) {
+            // if it is time to render a new frame
+            // do either sendResidualFrame or sendReferenceFrame  
             sendReferenceFrame = (frameCounter++) % refFrameInterval == 0; // insert Reference Frame every refFrameInterval frames
             sendResidualFrame = !sendReferenceFrame;
         }
+        spdlog::info("sendReferenceFrame: {}, sendResidualFrame: {}", sendReferenceFrame, sendResidualFrame);
         if (sendReferenceFrame || sendResidualFrame) {
             // Update all animations
             scene.updateAnimations(totalDT);
@@ -363,12 +367,19 @@ int main(int argc, char** argv) {
             lastRenderTime = now;
 
             pose_id_t poseID = poseReceiver.receivePose();
+            spdlog::info("Received Pose ID: {}, {}", poseID, prevPoseID);
             if (poseID != -1 && poseID != prevPoseID) {
                 // Offset camera
                 camera.setPosition(camera.getPosition() + initialPosition);
                 camera.updateViewMatrix();
 
+                double frameStartTime = timeutils::getTimeMicros();
+                spdlog::info("Time elapse between last send and current frame start: {:.3f}ms", timeutils::microsToMillis(frameStartTime - lastSendTime));
                 renderStats = quasar.generateFrame(sendResidualFrame, showNormals, showDepth);
+                // generate frame time
+                double frameEndTime = timeutils::getTimeMicros();
+                double frameTime = frameEndTime - frameStartTime;
+                spdlog::info("Frame Time: {:.3f}ms", timeutils::microsToMillis(frameTime));
 
                 // Restore camera position
                 camera.setPosition(camera.getPosition() - initialPosition);

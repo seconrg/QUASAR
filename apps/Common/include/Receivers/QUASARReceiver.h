@@ -5,12 +5,18 @@
 
 #include <Path.h>
 #include <CameraPose.h>
+
 #include <Quads/QuadSet.h>
 #include <Quads/QuadFrames.h>
 #include <Quads/QuadMesh.h>
+#include <Quads/FrameGenerator.h>
+
 #include <Networking/DataReceiverTCP.h>
+#include <PostProcessing/Tonemapper.h>
 #include <Receivers/VideoTexture.h>
 #include <Codecs/AlphaCodec.h>
+
+#include <Renderers/DepthPeelingRenderer.h>
 
 namespace quasar {
 
@@ -39,6 +45,10 @@ public:
         double decompressTimeMs = 0.0;
         double transferTimeMs = 0.0;
         double createMeshTimeMs = 0.0;
+        
+        double totalCreateProxiesTimeMs = 0.0;
+        double totalRenderTimeMs = 0.0;
+        double totalCreateMeshTimeMs = 0.0;
         QuadSet::Sizes sizes{};
     } stats;
 
@@ -51,8 +61,24 @@ public:
     VideoTexture videoAtlasTexture;
     Texture alphaAtlasTexture;
 
-    QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::string& videoURL = "", const std::string& proxiesURL = "");
-    QUASARReceiver(QuadSet& quadSet, uint maxLayers, float remoteFOV, float remoteFOVWide, const std::string& videoURL = "", const std::string& proxiesURL = "");
+    QUASARReceiver(
+        QuadSet& quadSet, 
+        DepthPeelingRenderer& remoteRendererDP,
+        DeferredRenderer& remoteRenderer,
+        Scene& remoteScene,
+        uint maxLayers, 
+        const std::string& videoURL = "", 
+        const std::string& proxiesURL = "");
+    QUASARReceiver(
+        QuadSet& quadSet,
+        DepthPeelingRenderer& remoteRendererDP,
+        DeferredRenderer& remoteRenderer, 
+        Scene& remoteScene,
+        uint maxLayers,
+        float remoteFOV,
+        float remoteFOVWide,
+        const std::string& videoURL = "",
+        const std::string& proxiesURL = "");
     ~QUASARReceiver() = default;
 
     QuadMesh& getMesh(int layer) { return meshes[layer]; }
@@ -63,6 +89,8 @@ public:
     void copyPoseToCamera(PerspectiveCamera& camera);
 
     void setDrawState(QuadMesh::DrawState drawState);
+    RenderStats generateFrame(bool createResidualFrame, bool showNormals, bool showDepth);
+
     void setViewSphereDiameter(float viewSphereDiameter) { this->viewSphereDiameter = viewSphereDiameter; }
 
     QuadFrame::FrameType loadFromFiles(const Path& dataPath);
@@ -78,6 +106,10 @@ private:
 
     std::vector<QuadMesh> meshes;
     QuadMesh residualFrameMesh;
+
+    DepthPeelingRenderer& remoteRendererDP;
+    DeferredRenderer& remoteRenderer;
+    Scene& remoteScene;
 
     struct BufferPool {
         std::vector<char> alphaData;
@@ -211,6 +243,11 @@ private:
     std::shared_ptr<Frame> frameInUse;
     std::shared_ptr<Frame> framePending;
     std::shared_ptr<Frame> frameFree;
+    
+    FrameGenerator frameGenerator;
+
+    std::vector<FrameRenderTarget> frameRTsHidLayer_noTone;
+    Tonemapper tonemapper;
 
     AlphaCodec alphaCodec;
 
