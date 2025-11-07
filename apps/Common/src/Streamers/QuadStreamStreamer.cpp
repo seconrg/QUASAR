@@ -121,6 +121,11 @@ RenderStats QuadStreamStreamer::generateFrame(bool showNormals, bool showDepth) 
     PerspectiveCamera& remoteCameraCenter = remoteCameras[0];
     remoteCameraCenter.setViewMatrix(remoteCamera.getViewMatrix());
     remoteCameraCenter.setPosition(remoteCamera.getPosition());
+    
+    std::vector<double> viewRenderTimesMs(maxViews, 0.0);
+    std::vector<double> viewProxyTimesMs(maxViews, 0.0);
+    std::vector<double> viewCompressTimesMs(maxViews, 0.0);
+    std::vector<size_t> viewProxySizes(maxViews);
 
     // Update other cameras in view box corners
     for (int view = 1; view < maxViews - 1; view++) {
@@ -142,7 +147,7 @@ RenderStats QuadStreamStreamer::generateFrame(bool showNormals, bool showDepth) 
     // Update wide fov camera
     remoteCameras[maxViews-1].setViewMatrix(remoteCameraCenter.getViewMatrix());
 
-    for (int view = 0; view < maxViews; view++) {
+    for (int view = 2; view < maxViews; view++) {
         auto& remoteCameraToUse = remoteCameras[view];
         auto& renderTargetToUse = referenceFrameRTs[view];
         auto& renderTargetToUse_noTone = referenceFrameRTs_noTone[view];
@@ -178,6 +183,10 @@ RenderStats QuadStreamStreamer::generateFrame(bool showNormals, bool showDepth) 
         }
         remoteRenderer.copyToFrameRT(renderTargetToUse);
         stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+        
+        viewRenderTimesMs[view] = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+        spdlog::info("  View {}: Rendered remote scene in {} ms",
+            view, viewRenderTimesMs[view]);
 
         /*
         ============================
@@ -209,6 +218,10 @@ RenderStats QuadStreamStreamer::generateFrame(bool showNormals, bool showDepth) 
 
         stats.totalCompressTimeMs += frameGenerator.stats.compressTimeMs;
 
+        viewProxyTimesMs[view] = frameGenerator.stats.createQuadsTimeMs;
+        viewCompressTimesMs[view] = frameGenerator.stats.compressTimeMs;
+        viewProxySizes[view] = referenceFrames[view].getTotalNumQuads();
+
         // For debugging: Generate point cloud from depth map
         if (showDepth) {
             depthMeshToUse.update(remoteCameraToUse, renderTargetToUse);
@@ -225,6 +238,26 @@ RenderStats QuadStreamStreamer::generateFrame(bool showNormals, bool showDepth) 
             referenceFrames[view].getTotalNumQuads(), referenceFrames[view].getTotalQuadsSize() * (103.0 / (8 * sizeof(QuadMapDataPacked))) / BYTES_PER_MEGABYTE,
             referenceFrames[view].getTotalNumDepthOffsets(), referenceFrames[view].getTotalDepthOffsetsSize() / BYTES_PER_MEGABYTE);
     }
+    
+    std::ofstream renderTimeFile("rendertime.csv", std::ios::app);
+    std::ofstream proxyTimeFile("proxytime.csv", std::ios::app);
+    std::ofstream compressTimeFile("compresstime.csv", std::ios::app);
+    std::ofstream proxySizeFile("proxysize.csv", std::ios::app);
+    for (int view = 0; view < maxViews-1; view++) {
+        renderTimeFile << viewRenderTimesMs[view] << ",";
+        proxyTimeFile << viewProxyTimesMs[view] << ",";
+        compressTimeFile << viewCompressTimesMs[view] << ",";
+        proxySizeFile << viewProxySizes[view] << ",";
+    }
+    renderTimeFile << viewRenderTimesMs[maxViews-1] << "\n";
+    proxyTimeFile << viewProxyTimesMs[maxViews-1] << "\n";
+    compressTimeFile << viewCompressTimesMs[maxViews-1] << "\n";
+    proxySizeFile << viewProxySizes[maxViews-1] << "\n";
+
+    renderTimeFile.close();
+    proxyTimeFile.close();
+    compressTimeFile.close();
+    proxySizeFile.close();
 
     stats.frameSize = stats.proxySizes.quadsSize + stats.proxySizes.depthOffsetsSize;
     return renderStats;

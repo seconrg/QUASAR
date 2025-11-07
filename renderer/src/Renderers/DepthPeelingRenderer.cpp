@@ -126,6 +126,8 @@ RenderStats DepthPeelingRenderer::drawScene(Scene& scene, const Camera& camera, 
 
 RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera, bool renderFrontEnd, uint32_t clearMask) {
     RenderStats stats;
+    spdlog::info("DepthPeelingRenderer::drawObjects called, renderFrontEnd = {}", renderFrontEnd);
+    double deeppeelstartTime = timeutils::getTimeMicros();
     if (camera.isVR()) {
         auto* vrCamera = static_cast<const VRCamera*>(&camera);
 
@@ -173,14 +175,22 @@ RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera
         updatePointLightShadows(scene, camera);
 
         // Draw all objects in the scene
+        double startTime = timeutils::getTimeMicros();
         if (renderFrontEnd) {
             stats += drawScene(scene, camera, clearMask);
         } else {
-            for (int i = 1; i < maxLayers; i++) {
+            for (int i = 0; i < maxLayers; i++) {
                 stats += drawSceneByLayer(scene, camera, i,clearMask);
+                spdlog::info("  Layer {} drawn in {} ms", i,
+                             timeutils::microsToMillis(timeutils::getTimeMicros() - startTime));
+                startTime = timeutils::getTimeMicros();
             }
         }
+        spdlog::info("  Scene drawn in {} ms", 
+                     timeutils::microsToMillis(timeutils::getTimeMicros() - startTime));
+        
 
+        double lightStartTime = timeutils::getTimeMicros();
         // Draw lights for debugging
         stats += drawLights(scene, camera);
 
@@ -188,6 +198,11 @@ RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera
 
         // Composite layers
         stats += compositeLayers();
+
+        spdlog::info("  Lights and compositing done in {} ms", 
+                     timeutils::microsToMillis(timeutils::getTimeMicros() - lightStartTime));
+        spdlog::info("Total drawObjects time: {} ms", 
+                     timeutils::microsToMillis(timeutils::getTimeMicros() - deeppeelstartTime));
     }
 
     return stats;

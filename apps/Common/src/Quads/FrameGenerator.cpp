@@ -37,6 +37,9 @@ void FrameGenerator::createReferenceFrame(
     referenceFrame.numDepthOffsets = sizes.numDepthOffsets;
     stats.transferTimeMs = quadSet.stats.transferTimeMs;
 
+    spdlog::info("Created {} quads and {} depth offsets for reference frame", 
+                 uncompressedQuads.size(), uncompressedOffsets.size());
+
     // Compress proxies (nonblocking)
     auto offsetsFuture = threadPool->submit_task([&]() {
         return referenceFrame.compressAndStoreDepthOffsets(uncompressedOffsets);

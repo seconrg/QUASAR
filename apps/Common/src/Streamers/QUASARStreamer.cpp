@@ -297,17 +297,33 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     Render scene normally to create Reference Frame textures
     ============================
     */
+
+    int start_layer = 0;
+
     double startTime = timeutils::getTimeMicros();
-    RenderStats renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
+    RenderStats renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera, !start_layer);
     stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+
+    spdlog::info("  Rendered remote scene in {} ms", 
+                 timeutils::microsToMillis(timeutils::getTimeMicros() - startTime));
     
     int numLayers = maxLayers;
+
+    std::vector<double> layerProxyTimesMs(numLayers, 0.0);
+    std::vector<double> layerCompressTimesMs(numLayers, 0.0);
+    std::vector<size_t> layerFrameSizes(numLayers, 0);
+    std::vector<size_t> layerProxySizes(numLayers);
     
+
+    int layerid[5] = {2, 3, 1, 0, 4};
     // we only do layer 0 and the last layer (wide FOV)
     // for (int layer = 0; layer < numLayers; layer+=numLayers-1) {
-    for (int layer = 0; layer < numLayers; layer += numLayers-1) {
-        int hiddenLayerIndex = layer - 1;
+    for (int xid = 0; xid < 5; xid += 1) {
 
+        int layer = layerid[xid];
+        int hiddenLayerIndex = layer - 1;
+        
+        // if we are trying to render with residual frame, we are always using a previous frame's result
         auto& remoteCameraToUse = (layer == 0 && createResidualFrame)
                                     ? remoteCameraPrev
                                     : ((layer != maxLayers - 1) ? remoteCamera : remoteCameraWideFOV);
@@ -345,6 +361,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
             remoteRenderer.pipeline.stencilState.restoreStencilState();
             remoteRenderer.copyToFrameRT(renderTargetToUse);
         }
+
         stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
         /*
@@ -368,7 +385,8 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
             (layer != 0 && layer != maxLayers - 1) ? renderTargetToUse_noTone : renderTargetToUse,
             remoteCameraToUse,
             meshToUse,
-            (layer == 0 && createResidualFrame) ? dummyFrame : referenceFrames[layer] // Don't save output of this reference frame if we are making a residual frame
+            (layer == 0 && createResidualFrame) ? dummyFrame : referenceFrames[layer] 
+            // Don't save output of this reference frame if we are making a residual frame
         );
         if (!showNormals) {
             if (layer == 0) {
@@ -393,20 +411,15 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         stats.totalSimplifyTimeMs += frameGenerator.stats.simplifyQuadsTimeMs;
         stats.totalGatherQuadsTime += frameGenerator.stats.gatherQuadsTimeMs;
         stats.totalCreateProxiesTimeMs += frameGenerator.stats.createQuadsTimeMs;
-
-        spdlog::info("    Layer {}: Created reference proxies in {} ms", 
-                     layer, frameGenerator.stats.createQuadsTimeMs);
-        spdlog::info("    Layer {}: Created reference frame mesh in {} ms", 
-                     layer, frameGenerator.stats.createMeshTimeMs);
         
+        layerProxyTimesMs[layer] = frameGenerator.stats.createQuadsTimeMs;
 
         stats.totalAppendQuadsTimeMs += frameGenerator.stats.appendQuadsTimeMs;
         stats.totalCreateVertIndTimeMs += frameGenerator.stats.createVertIndTimeMs;
         stats.totalCreateMeshTimeMs += frameGenerator.stats.createMeshTimeMs;
 
         if (!createResidualFrame || layer != 0) {
-            spdlog::info("    Layer {}: compressed reference frame in {} ms", 
-                          layer, frameGenerator.stats.compressTimeMs);
+            layerCompressTimesMs[layer] = frameGenerator.stats.compressTimeMs;
             stats.totalCompressTimeMs += frameGenerator.stats.compressTimeMs;
         }
 
@@ -462,6 +475,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
                 stats.totalCreateMeshTimeMs += frameGenerator.stats.createMeshTimeMs;
 
                 stats.totalCompressTimeMs += frameGenerator.stats.compressTimeMs;
+                layerCompressTimesMs[layer] = frameGenerator.stats.compressTimeMs;
             }
             else {
                 // Only update the previous camera pose if we are not generating a Residual Frame
@@ -483,6 +497,8 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         // if it is not creating residual frame or it is not the first layer, accumulate sizes
         if (!(createResidualFrame && layer == 0)) {
             stats.proxySizes.numQuads += referenceFrames[layer].getTotalNumQuads();
+            layerProxySizes[layer] = referenceFrames[layer].getTotalNumQuads();
+
             stats.proxySizes.numDepthOffsets += referenceFrames[layer].getTotalNumDepthOffsets();
             stats.proxySizes.quadsSize += referenceFrames[layer].getTotalQuadsSize();
             stats.proxySizes.depthOffsetsSize += referenceFrames[layer].getTotalDepthOffsetsSize();
@@ -492,6 +508,8 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         }
         else {
             stats.proxySizes.numQuads += residualFrame.getTotalNumQuads();
+            layerProxySizes[layer] = referenceFrames[layer].getTotalNumQuads();
+
             stats.proxySizes.numDepthOffsets += residualFrame.getTotalNumDepthOffsets();
             stats.proxySizes.quadsSize += residualFrame.getTotalQuadsSize();
             stats.proxySizes.depthOffsetsSize += residualFrame.getTotalDepthOffsetsSize();
@@ -551,6 +569,22 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         col, row, dstWidth, dstHeight
     );
 
+    // write out to csv file about the output result
+    std::ofstream proxyTimeFile("proxytime.csv", std::ios::app);
+    std::ofstream compressTimeFile("compresstime.csv", std::ios::app);
+    std::ofstream proxySizeFile("proxysize.csv", std::ios::app);
+    for (int layer = 0; layer < numLayers-1; layer++) {
+        proxyTimeFile << layerProxyTimesMs[layer] << ",";
+        compressTimeFile << layerCompressTimesMs[layer] << ",";
+        proxySizeFile << layerProxySizes[layer] << ",";
+    }
+    proxyTimeFile << layerProxyTimesMs[numLayers-1] << "\n";
+    compressTimeFile << layerCompressTimesMs[numLayers-1] << "\n";
+    proxySizeFile << layerProxySizes[numLayers-1] << "\n";
+    proxyTimeFile.close();
+    compressTimeFile.close();
+    proxySizeFile.close();
+
     return renderStats;
 }
 
@@ -564,13 +598,13 @@ void QUASARStreamer::sendFrame(pose_id_t poseID, bool createResidualFrame) {
     }
 }
 
-void QUASARStreamer::writeTexturesToFiles(const Path& outputPath) {
+void QUASARStreamer::writeTexturesToFiles(const Path& outputPath, int frameCounter) {
     // Save color
-    Path colorFileName = (outputPath / "color.jpg");
+    Path colorFileName = (outputPath / fmt::format("color_{}.jpg", frameCounter));
     videoAtlasStreamerRT.writeColorAsJPG(colorFileName);
 
     // Save alpha
-    Path alphaFileName = (outputPath / "alpha.png");
+    Path alphaFileName = (outputPath / fmt::format("alpha_{}.png", frameCounter));
     alphaAtlasRT.writeAlphaAsPNG(alphaFileName);
 }
 
@@ -595,7 +629,7 @@ size_t QUASARStreamer::writeToFiles(const Path& outputPath, int frameCounter) {
     // };
     // FileIO::writeToBinaryFile(outputPath / "metadata.bin", &params, sizeof(params));
 
-    writeTexturesToFiles(outputPath);
+    writeTexturesToFiles(outputPath, frameCounter);
     // Save proxies
     size_t totalOutputSize = 0;
     for (int layer = 0; layer < maxLayers; layer++) {

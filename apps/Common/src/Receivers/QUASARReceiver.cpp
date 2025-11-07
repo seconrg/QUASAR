@@ -205,8 +205,9 @@ RenderStats QUASARReceiver::generateFrame(bool createResidualFrame, bool showNor
     double renderStartTime = timeutils::getTimeMicros();
     RenderStats renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera, false);
     stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - renderStartTime);
+    
     int numLayers = maxLayers;
-    for (int layer = 1; layer < numLayers-1; layer++) {
+    for (int layer = 0; layer < numLayers; layer++) {
 
         int hiddenLayerIndex = layer - 1;
         auto& cameraToUse = (layer != maxLayers - 1) ? remoteCamera : remoteCameraWideFOV;
@@ -501,7 +502,7 @@ QuadFrame::FrameType QUASARReceiver::reconstructFrame(std::shared_ptr<Frame> fra
 
     // Reconstruct hidden layers and wide FOV
     // Temporarily disable for performance testing
-    /*
+    
     for (int layer = 1; layer < maxLayers; layer++) {
         auto sizes = quadSet.loadFromMemory(bufferPool.uncompressedQuads[layer], bufferPool.uncompressedOffsets[layer]);
         referenceFrames[layer].numQuads = sizes.numQuads;
@@ -517,7 +518,7 @@ QuadFrame::FrameType QUASARReceiver::reconstructFrame(std::shared_ptr<Frame> fra
         auto meshBufferSizes = meshes[layer].getBufferSizes();
         stats.totalTriangles += meshBufferSizes.numIndices / 3;
         stats.sizes += sizes;
-    }*/
+    }
 
     return frame->frameType;
 }

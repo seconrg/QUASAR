@@ -416,7 +416,7 @@ int main(int argc, char** argv) {
                     spdlog::info("Saved {} bytes to {}", quasar.writeToMemory(-1, sendResidualFrame, compressedData), outputPath.absolutePathStr());
                     Path filename = (outputPath / "frame").appendToName(".bin");
                     FileIO::writeToBinaryFile(filename, compressedData.data(), compressedData.size());
-                    quasar.writeTexturesToFiles(outputPath);
+                    quasar.writeTexturesToFiles(outputPath, 0);
                 }
                 else {
                     spdlog::info("Saved {} bytes to {}", quasar.writeToFiles(outputPath, 0), outputPath.absolutePathStr());

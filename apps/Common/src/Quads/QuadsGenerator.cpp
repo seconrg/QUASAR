@@ -260,6 +260,8 @@ void QuadsGenerator::createProxies(
     gatherOutputQuads(gBufferSize);
 
     QuadsGenerator::BufferSizes bufferSizes = getBufferSizes();
+    spdlog::info("Generated {} quads ({} transparent) with {} depth offsets",
+                 bufferSizes.numProxies, bufferSizes.numProxiesTransparent, bufferSizes.numDepthOffsets);
     quadSet.setNumProxies(bufferSizes.numProxies, bufferSizes.numProxiesTransparent);
 }
 

@@ -105,7 +105,7 @@ public:
 
     void setDrawState(QuadMesh::DrawState drawState);
 
-    void writeTexturesToFiles(const Path& outputPath);
+    void writeTexturesToFiles(const Path& outputPath, int frameCounter);
     size_t writeToFiles(const Path& outputPath, int frameCounter);
     size_t writeToMemory(pose_id_t poseID, bool writeResidualFrame, std::vector<char>& outputData);
 
