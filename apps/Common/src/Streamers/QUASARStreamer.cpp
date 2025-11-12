@@ -315,7 +315,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     std::vector<size_t> layerProxySizes(numLayers);
     
 
-    int layerid[5] = {2, 3, 1, 0, 4};
+    int layerid[5] = {0, 1, 2, 3, 4};
     // we only do layer 0 and the last layer (wide FOV)
     // for (int layer = 0; layer < numLayers; layer+=numLayers-1) {
     for (int xid = 0; xid < 5; xid += 1) {
@@ -381,6 +381,10 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
             quadsGenerator->params.expandEdges = false;
         }
         ReferenceFrame dummyFrame;
+
+        char nvtxRangeName[64];
+        std::snprintf(nvtxRangeName, sizeof(nvtxRangeName), "Layer Frame: %d", layer);
+        nvtxRangePushA(nvtxRangeName);
         frameGenerator.createReferenceFrame(
             (layer != 0 && layer != maxLayers - 1) ? renderTargetToUse_noTone : renderTargetToUse,
             remoteCameraToUse,
@@ -388,6 +392,8 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
             (layer == 0 && createResidualFrame) ? dummyFrame : referenceFrames[layer] 
             // Don't save output of this reference frame if we are making a residual frame
         );
+
+        nvtxRangePop();
         if (!showNormals) {
             if (layer == 0) {
                 remoteRenderer.copyToFrameRT(referenceFrameRT_noTone);
@@ -430,6 +436,8 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         */
         if (layer == 0) {
             if (createResidualFrame) {
+
+                nvtxRangePushA("Generate Residual Frame");
                 /*
                 ============================
                 Generate masked Residual Frame textures
@@ -462,6 +470,8 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
                 else {
                     showNormalsEffect.drawToRenderTarget(remoteRenderer, residualFrameRT_noTone);
                 }
+
+                nvtxRangePop();
 
                 stats.totalRenderTimeMs += frameGenerator.stats.updateRTsTimeMs;
 

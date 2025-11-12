@@ -14,6 +14,8 @@
 #include <PostProcessing/ShowNormalsEffect.h>
 #include <Codecs/AlphaCodec.h>
 
+#include "nvtx3/nvToolsExt.h"
+
 namespace quasar {
 
 struct QUASARStreamerCreateParams {

@@ -147,7 +147,7 @@ RenderStats QuadStreamStreamer::generateFrame(bool showNormals, bool showDepth) 
     // Update wide fov camera
     remoteCameras[maxViews-1].setViewMatrix(remoteCameraCenter.getViewMatrix());
 
-    for (int view = 2; view < maxViews; view++) {
+    for (int view = 0; view < maxViews; view++) {
         auto& remoteCameraToUse = remoteCameras[view];
         auto& renderTargetToUse = referenceFrameRTs[view];
         auto& renderTargetToUse_noTone = referenceFrameRTs_noTone[view];
@@ -155,6 +155,10 @@ RenderStats QuadStreamStreamer::generateFrame(bool showNormals, bool showDepth) 
         auto& depthMeshToUse = depthMeshes[view];
 
         double startTime = timeutils::getTimeMicros();
+        
+        char nvtxRangeName[64];
+        std::snprintf(nvtxRangeName, sizeof(nvtxRangeName), "View Frame: %d", view);
+        nvtxRangePushA(nvtxRangeName);
 
         // Center view
         if (view == 0) {
@@ -198,6 +202,9 @@ RenderStats QuadStreamStreamer::generateFrame(bool showNormals, bool showDepth) 
             meshToUse,
             referenceFrames[view]
         );
+
+        nvtxRangePop();
+
         if (!showNormals) {
             renderTargetToUse.blit(renderTargetToUse_noTone);
             tonemapper.setUniforms(renderTargetToUse_noTone);

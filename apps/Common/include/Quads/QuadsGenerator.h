@@ -7,6 +7,8 @@
 
 #include <Quads/QuadSet.h>
 
+#include "nvtx3/nvToolsExt.h"
+
 namespace quasar {
 
 class QuadsGenerator {

@@ -25,7 +25,9 @@ void FrameGenerator::createReferenceFrame(
     ============================
     */
     double startTime = timeutils::getTimeMicros();
+    nvtxRangePushA("Create Reference Frame Proxies");
     quadsGenerator->createProxiesFromRT(referenceFrameRT, remoteCamera);
+    nvtxRangePop();
     stats.generateQuadsTimeMs = quadsGenerator->stats.generateQuadsTimeMs;
     stats.simplifyQuadsTimeMs = quadsGenerator->stats.simplifyQuadsTimeMs;
     stats.gatherQuadsTimeMs = quadsGenerator->stats.gatherQuadsTimeMs;
@@ -47,6 +49,7 @@ void FrameGenerator::createReferenceFrame(
     auto quadsFuture = threadPool->submit_task([&]() {
         return referenceFrame.compressAndStoreQuads(uncompressedQuads);
     });
+    nvtxRangePushA("Create Reference Frame Meshes");
 
     // Using GPU buffers, reconstruct mesh using proxies
     startTime = timeutils::getTimeMicros();
@@ -64,6 +67,7 @@ void FrameGenerator::createReferenceFrame(
     referenceFrame.quads.resize(quadsFuture.get());
     referenceFrame.depthOffsets.resize(offsetsFuture.get());
     stats.compressTimeMs = referenceFrame.getCompressTime();
+    nvtxRangePop();
 }
 
 void FrameGenerator::updateResidualRenderTargets(
