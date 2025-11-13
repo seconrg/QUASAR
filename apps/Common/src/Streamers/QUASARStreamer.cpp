@@ -74,8 +74,10 @@ QUASARStreamer::QUASARStreamer(
         .magFilter = GL_NEAREST,
     })
     , videoAtlasStreamerRT({
+        // .width = 2 * quadSet.getSize().x,
+        // .height = 3 * quadSet.getSize().y,
         .width = 2 * quadSet.getSize().x,
-        .height = 3 * quadSet.getSize().y,
+        .height = quadSet.getSize().y,
         .internalFormat = GL_SRGB8_ALPHA8,
         .format = GL_RGBA,
         .type = GL_UNSIGNED_BYTE,
@@ -317,10 +319,10 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
 
     int layerid[5] = {0, 1, 2, 3, 4};
     // we only do layer 0 and the last layer (wide FOV)
-    // for (int layer = 0; layer < numLayers; layer+=numLayers-1) {
-    for (int xid = 0; xid < 5; xid += 1) {
-
-        int layer = layerid[xid];
+    for (int layer = 0; layer < 1; layer+=1) {
+    // for (int xid = 0; xid < 1; xid += 1) {
+        // int layer = layerid[xid];
+        
         int hiddenLayerIndex = layer - 1;
         
         // if we are trying to render with residual frame, we are always using a previous frame's result
@@ -389,8 +391,9 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
             (layer != 0 && layer != maxLayers - 1) ? renderTargetToUse_noTone : renderTargetToUse,
             remoteCameraToUse,
             meshToUse,
-            (layer == 0 && createResidualFrame) ? dummyFrame : referenceFrames[layer] 
+            (layer == 0 && createResidualFrame) ? dummyFrame : referenceFrames[layer],
             // Don't save output of this reference frame if we are making a residual frame
+            layer
         );
 
         nvtxRangePop();
@@ -545,17 +548,17 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
                 col, row, dstWidth, dstHeight
             );
         }
-        else {
-            int hiddenLayerIndex = layer - 1;
-            frameRTsHidLayer[hiddenLayerIndex].blit(videoAtlasStreamerRT,
-                0, 0, frameRTsHidLayer[hiddenLayerIndex].width, frameRTsHidLayer[hiddenLayerIndex].height,
-                col, row, dstWidth, dstHeight
-            );
-            frameRTsHidLayer_noTone[hiddenLayerIndex].blit(alphaAtlasRT,
-                0, 0, frameRTsHidLayer_noTone[hiddenLayerIndex].width, frameRTsHidLayer_noTone[hiddenLayerIndex].height,
-                col, row, dstWidth, dstHeight
-            );
-        }
+        // else {
+        //     int hiddenLayerIndex = layer - 1;
+        //     frameRTsHidLayer[hiddenLayerIndex].blit(videoAtlasStreamerRT,
+        //         0, 0, frameRTsHidLayer[hiddenLayerIndex].width, frameRTsHidLayer[hiddenLayerIndex].height,
+        //         col, row, dstWidth, dstHeight
+        //     );
+        //     frameRTsHidLayer_noTone[hiddenLayerIndex].blit(alphaAtlasRT,
+        //         0, 0, frameRTsHidLayer_noTone[hiddenLayerIndex].width, frameRTsHidLayer_noTone[hiddenLayerIndex].height,
+        //         col, row, dstWidth, dstHeight
+        //     );
+        // }
         col += referenceFrameRT.width;
         dstWidth += referenceFrameRT.width;
         if (col >= videoAtlasStreamerRT.width) {

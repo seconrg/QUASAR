@@ -13,7 +13,7 @@ FrameGenerator::FrameGenerator(QuadSet& quadSet)
 void FrameGenerator::createReferenceFrame(
     const FrameRenderTarget& referenceFrameRT, const PerspectiveCamera& remoteCamera,
     QuadMesh& referenceMesh,
-    ReferenceFrame& referenceFrame)
+    ReferenceFrame& referenceFrame, int layer_index)
 {
     stats = { 0 };
 
@@ -25,8 +25,17 @@ void FrameGenerator::createReferenceFrame(
     ============================
     */
     double startTime = timeutils::getTimeMicros();
-    nvtxRangePushA("Create Reference Frame Proxies");
+
+    char nvtxRangeNameProxy[64];
+    std::snprintf(nvtxRangeNameProxy, sizeof(nvtxRangeNameProxy), "Create Reference Frame Proxies: %d", layer_index);
+    nvtxRangePushA(nvtxRangeNameProxy);
+    glEnable(GL_DEBUG_OUTPUT);
+    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+    glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 0, -1, nvtxRangeNameProxy);
+
     quadsGenerator->createProxiesFromRT(referenceFrameRT, remoteCamera);
+
+    glPopDebugGroup();
     nvtxRangePop();
     stats.generateQuadsTimeMs = quadsGenerator->stats.generateQuadsTimeMs;
     stats.simplifyQuadsTimeMs = quadsGenerator->stats.simplifyQuadsTimeMs;
@@ -34,22 +43,25 @@ void FrameGenerator::createReferenceFrame(
     stats.createQuadsTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
     // Transfer updated proxies to CPU for compression
-    auto sizes = quadSet.writeToMemory(uncompressedQuads, uncompressedOffsets, params.applyDeltaEncoding);
-    referenceFrame.numQuads = sizes.numQuads;
-    referenceFrame.numDepthOffsets = sizes.numDepthOffsets;
-    stats.transferTimeMs = quadSet.stats.transferTimeMs;
+    // auto sizes = quadSet.writeToMemory(uncompressedQuads, uncompressedOffsets, params.applyDeltaEncoding);
+    // referenceFrame.numQuads = sizes.numQuads;
+    // referenceFrame.numDepthOffsets = sizes.numDepthOffsets;
+    // stats.transferTimeMs = quadSet.stats.transferTimeMs;
 
     spdlog::info("Created {} quads and {} depth offsets for reference frame", 
                  uncompressedQuads.size(), uncompressedOffsets.size());
 
     // Compress proxies (nonblocking)
-    auto offsetsFuture = threadPool->submit_task([&]() {
-        return referenceFrame.compressAndStoreDepthOffsets(uncompressedOffsets);
-    });
-    auto quadsFuture = threadPool->submit_task([&]() {
-        return referenceFrame.compressAndStoreQuads(uncompressedQuads);
-    });
-    nvtxRangePushA("Create Reference Frame Meshes");
+    // auto offsetsFuture = threadPool->submit_task([&]() {
+    //     return referenceFrame.compressAndStoreDepthOffsets(uncompressedOffsets);
+    // });
+    // auto quadsFuture = threadPool->submit_task([&]() {
+    //     return referenceFrame.compressAndStoreQuads(uncompressedQuads);
+    // });
+
+    char nvtxRangeNameMesh[64];
+    std::snprintf(nvtxRangeNameMesh, sizeof(nvtxRangeNameMesh), "Create Reference Frame Meshes: %d", layer_index);
+    nvtxRangePushA(nvtxRangeNameMesh);
 
     // Using GPU buffers, reconstruct mesh using proxies
     startTime = timeutils::getTimeMicros();
@@ -64,9 +76,10 @@ void FrameGenerator::createReferenceFrame(
     Wait for asynchronous compression to finish and set resulting data sizes
     ============================
     */
-    referenceFrame.quads.resize(quadsFuture.get());
-    referenceFrame.depthOffsets.resize(offsetsFuture.get());
-    stats.compressTimeMs = referenceFrame.getCompressTime();
+    // referenceFrame.quads.resize(quadsFuture.get());
+    // referenceFrame.depthOffsets.resize(offsetsFuture.get());
+    // stats.compressTimeMs = referenceFrame.getCompressTime();
+
     nvtxRangePop();
 }
 

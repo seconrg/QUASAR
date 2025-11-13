@@ -200,7 +200,8 @@ RenderStats QuadStreamStreamer::generateFrame(bool showNormals, bool showDepth) 
         frameGenerator.createReferenceFrame(
             renderTargetToUse, remoteCameraToUse,
             meshToUse,
-            referenceFrames[view]
+            referenceFrames[view],
+            view
         );
 
         nvtxRangePop();

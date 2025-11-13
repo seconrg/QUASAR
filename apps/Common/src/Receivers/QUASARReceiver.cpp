@@ -20,8 +20,10 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet,
     , remoteCameraWideFOV(quadSet.getSize())
     , frameGenerator(quadSet)
     , videoAtlasTexture({
+        // .width = 2 * quadSet.getSize().x,
+        // .height = 3 * quadSet.getSize().y,
         .width = 2 * quadSet.getSize().x,
-        .height = 3 * quadSet.getSize().y,
+        .height = quadSet.getSize().y,
         .internalFormat = GL_SRGB8,
         .format = GL_RGB,
         .type = GL_UNSIGNED_BYTE,
@@ -207,7 +209,7 @@ RenderStats QUASARReceiver::generateFrame(bool createResidualFrame, bool showNor
     stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - renderStartTime);
     
     int numLayers = maxLayers;
-    for (int layer = 0; layer < numLayers; layer++) {
+    for (int layer = 1; layer < numLayers-1; layer++) {
 
         int hiddenLayerIndex = layer - 1;
         auto& cameraToUse = (layer != maxLayers - 1) ? remoteCamera : remoteCameraWideFOV;
@@ -228,7 +230,8 @@ RenderStats QUASARReceiver::generateFrame(bool createResidualFrame, bool showNor
             frameToUse_noTone, 
             cameraToUse,
             meshToUse,
-            referenceFrames[layer]
+            referenceFrames[layer],
+            layer
         );
 
         stats.totalCreateMeshTimeMs += frameGenerator.stats.createMeshTimeMs;

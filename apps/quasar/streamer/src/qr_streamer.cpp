@@ -403,6 +403,9 @@ int main(int argc, char** argv) {
                 prevPoseID = poseID;
                 quasar.sendFrame(poseID, sendResidualFrame);
 
+                Path output_path(std::string("robot_lab_result/images/robot_lab/qr_streamer_0.25")); 
+                quasar.writeToFiles(output_path, frameCounter); // for debugging
+
                 showResidualFrame = sendResidualFrame;
                 sendReferenceFrame = false;
                 sendResidualFrame = false;
