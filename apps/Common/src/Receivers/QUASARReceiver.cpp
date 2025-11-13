@@ -177,9 +177,9 @@ QuadFrame::FrameType QUASARReceiver::recvData() {
         alphaAtlasTexture.bind();
         alphaAtlasTexture.loadFromData(frame->bufferPool.alphaData.data());
 
-        // For debug: save a copy of alpha texture
-        Path debugPath = Path(std::string("debug_alpha_{}.png", frame->poseID));
-        alphaAtlasTexture.writeToPNG(debugPath);
+        // // For debug: save a copy of alpha texture
+        // Path debugPath = Path(std::string("debug_alpha_{}.png", frame->poseID));
+        // alphaAtlasTexture.writeToPNG(debugPath);
 
         // Reconstruct meshes from frame
         frameType = reconstructFrame(frame);
@@ -406,16 +406,19 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
     }
     // copy hidden layers from 
     // Hidden layers and wide FOV
-    for (int layer = 1; layer < maxLayers; layer++) {
-        std::memcpy(&layerSize, layerPtr, sizeof(uint32_t));
-        const char* dataPtr = layerPtr + sizeof(uint32_t);
+    // for (int layer = 1; layer < maxLayers; layer++) {
+    //     std::memcpy(&layerSize, layerPtr, sizeof(uint32_t));
+    //     const char* dataPtr = layerPtr + sizeof(uint32_t);
 
-        futures.emplace_back(threadPool->submit_task([&, layer, dataPtr, layerSize]() {
-            return referenceFrames[layer].loadFromMemory(dataPtr, layerSize);
-        }));
+    //     futures.emplace_back(threadPool->submit_task([&, layer, dataPtr, layerSize]() {
+    //         return referenceFrames[layer].loadFromMemory(dataPtr, layerSize);
+    //     }));
 
-        layerPtr += sizeof(uint32_t) + layerSize;
-    }
+    //     layerPtr += sizeof(uint32_t) + layerSize;
+    // }
+
+    // print out reference frames
+    // we only need referenceFrames layer 0 here 
 
     for (auto& f : futures) f.get();
 
