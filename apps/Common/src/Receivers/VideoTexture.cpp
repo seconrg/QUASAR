@@ -221,9 +221,9 @@ void VideoTexture::receiveFrame() {
         const pose_id_t poseID = unpackPoseIDFromFrame(map.data, videoWidth, videoHeight);
     
         // write raw RGB frames back to see what is received
-        std::string frameData = std::string("received_frame_") + std::to_string(poseID) + ".png";
-        spdlog::info("Writing received frame with PoseID {}", poseID);
-        FileIO::writeToPNG(frameData, videoWidth, videoHeight, 3, map.data);
+        // std::string frameData = std::string("received_frame_") + std::to_string(poseID) + ".png";
+        // spdlog::info("Writing received frame with PoseID {}", poseID);
+        // FileIO::writeToPNG(frameData, videoWidth, videoHeight, 3, map.data);
 
         {
             std::unique_lock<std::mutex> lock(m);
@@ -318,6 +318,7 @@ pose_id_t VideoTexture::draw(pose_id_t poseID) {
     FrameData* frameData = nullptr;
     if (poseID != -1) {
         for (auto& f : frames) {
+            spdlog::debug("VideoTexture: requested poseID {}, current {}", poseID, f.poseID);
             if (f.poseID == poseID) {
                 frameData = &f;
                 break;
