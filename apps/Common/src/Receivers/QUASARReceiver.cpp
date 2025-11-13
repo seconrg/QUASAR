@@ -177,6 +177,10 @@ QuadFrame::FrameType QUASARReceiver::recvData() {
         alphaAtlasTexture.bind();
         alphaAtlasTexture.loadFromData(frame->bufferPool.alphaData.data());
 
+        // For debug: save a copy of alpha texture
+        Path debugPath = Path(std::string("debug_alpha_{}.png", frame->poseID));
+        alphaAtlasTexture.writeToPNG(debugPath);
+
         // Reconstruct meshes from frame
         frameType = reconstructFrame(frame);
 

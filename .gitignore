@@ -48,3 +48,8 @@ ImportExecutables-*.cmake
 
 # Ignore large 3D assets
 /assets/models/scenes
+
+*csv
+*sqlite
+*nsys-rep
+*zip
