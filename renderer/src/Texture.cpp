@@ -48,7 +48,7 @@ Texture::Texture(const TextureDataCreateParams& params)
         channels = 4;
     }
 
-    loadFromData(params.data, true);
+    loadFromData(params.data, true, params.width, params.height);
 
     if (params.hasBorder) {
         glTexParameterfv(target, GL_TEXTURE_BORDER_COLOR, glm::value_ptr(params.borderColor));
@@ -86,7 +86,7 @@ Texture::~Texture() {
     cleanup();
 }
 
-void Texture::loadFromData(const void* data, bool resize) {
+void Texture::loadFromData(const void* data, bool resize, int target_width, int target_height) {
     glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
     glBindTexture(target, ID);
 
@@ -98,18 +98,20 @@ void Texture::loadFromData(const void* data, bool resize) {
 
         if (!array) {
             if (resize || data == nullptr) {
-                glTexImage2D(target, 0, internalFormat, width, height, 0, format, type, data);
+                printf("Loading texture data: %dx%d\n", target_width, target_height);
+                glTexImage2D(target, 0, internalFormat, target_width, target_height, 0, format, type, data);
             }
             else {
-                glTexSubImage2D(target, 0, 0, 0, width, height, format, type, data);
+                printf("Updating texture data: %dx%d\n", target_width, target_height);
+                glTexSubImage2D(target, 0, 0, 0, target_width, target_height, format, type, data);
             }
         }
         else {
             if (resize || data == nullptr) {
-                glTexImage3D(target, 0, internalFormat, width, height, arrayLayers, 0, format, type, data);
+                glTexImage3D(target, 0, internalFormat, target_width, target_height, arrayLayers, 0, format, type, data);
             }
             else {
-                glTexSubImage3D(target, 0, 0, 0, 0, width, height, arrayLayers, format, type, data);
+                glTexSubImage3D(target, 0, 0, 0, 0, target_width, target_height, arrayLayers, format, type, data);
             }
         }
 
@@ -119,7 +121,7 @@ void Texture::loadFromData(const void* data, bool resize) {
     }
 #ifdef GL_CORE
     else {
-        glTexImage2DMultisample(target, numSamples, internalFormat, width, height, GL_TRUE);
+        glTexImage2DMultisample(target, numSamples, internalFormat, target_width, target_height, GL_TRUE);
     }
 #endif
     glBindTexture(target, 0);
@@ -181,7 +183,7 @@ void Texture::loadFromFile(const std::string& path, bool flipTextureY, bool gamm
             break;
     }
 
-    loadFromData(data, true);
+    loadFromData(data, true, texWidth, texHeight);
     FileIO::freeImage(data);
 }
 
@@ -192,7 +194,7 @@ void Texture::resize(uint width, uint height) {
 
     this->width = width;
     this->height = height;
-    loadFromData(nullptr, true);
+    loadFromData(nullptr, true, width, height);
 }
 
 void Texture::readPixels(unsigned char* data, bool readAsFloat) {

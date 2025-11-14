@@ -10,10 +10,10 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::stri
     , remoteCamera(quadSet.getSize())
     , remoteCameraWideFOV(quadSet.getSize())
     , videoAtlasTexture({
-        // .width = 2 * quadSet.getSize().x,
-        // .height = 3 * quadSet.getSize().y,
         .width = 2 * quadSet.getSize().x,
-        .height = quadSet.getSize().y,
+        .height = 3 * quadSet.getSize().y,
+        // .width = 2 * quadSet.getSize().x,
+        // .height = quadSet.getSize().y,
         .internalFormat = GL_SRGB8,
         .format = GL_RGB,
         .type = GL_UNSIGNED_BYTE,
@@ -23,10 +23,10 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::stri
         .magFilter = GL_NEAREST,
     }, videoURL)
     , alphaAtlasTexture({
-        // .width = 2 * quadSet.getSize().x,
-        // .height = 3 * quadSet.getSize().y,
         .width = 2 * quadSet.getSize().x,
-        .height = quadSet.getSize().y,
+        .height = 3 * quadSet.getSize().y,
+        // .width = 2 * quadSet.getSize().x,
+        // .height = quadSet.getSize().y,
         .internalFormat = GL_R8,
         .format = GL_RED,
         .type = GL_UNSIGNED_BYTE,
@@ -35,7 +35,7 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::stri
         .minFilter = GL_NEAREST,
         .magFilter = GL_NEAREST,
     })
-    , alphaCodec(alphaAtlasTexture.width, alphaAtlasTexture.height)
+    , alphaCodec(alphaAtlasTexture.width, alphaAtlasTexture.height / 3)
     , residualFrameMesh(quadSet, videoAtlasTexture, alphaAtlasTexture)
     , bufferPool(quadSet.getSize(), maxLayers)
     , DataReceiverTCP(proxiesURL)
@@ -60,6 +60,7 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::stri
         textureExtent.z = textureExtent.x + 0.5f;
         textureExtent.w = textureExtent.y + 1.0f / 3.0f;
     }
+
     residualFrameMesh.setTextureExtent(textureExtent);
 
     frameInUse = std::make_shared<Frame>(bufferPool);
@@ -144,7 +145,7 @@ QuadFrame::FrameType QUASARReceiver::recvData() {
 
         // Update alpha texture
         alphaAtlasTexture.bind();
-        alphaAtlasTexture.loadFromData(frame->bufferPool.alphaData.data());
+        alphaAtlasTexture.loadFromData(frame->bufferPool.alphaData.data(), false, alphaAtlasTexture.width, alphaAtlasTexture.height);
 
         // Reconstruct meshes from frame
         frameType = reconstructFrame(frame);

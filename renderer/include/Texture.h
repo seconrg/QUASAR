@@ -95,7 +95,7 @@ public:
     void resize(uint width, uint height);
 
     void loadFromFile(const std::string& path, bool flipTextureY, bool gammaCorrected);
-    void loadFromData(const void* data, bool resize = false);
+    void loadFromData(const void* data, bool resize = false,  int target_width = 0, int target_height = 0);
 
     void cleanup() {
         glDeleteTextures(1, &ID);

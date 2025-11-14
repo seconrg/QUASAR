@@ -104,7 +104,7 @@ QuadFrame::FrameType QuadsReceiver::recvData() {
 
         // Update alpha texture
         alphaAtlasTexture.bind();
-        alphaAtlasTexture.loadFromData(frame->alphaData.data());
+        alphaAtlasTexture.loadFromData(frame->alphaData.data(), false, alphaAtlasTexture.width, alphaAtlasTexture.height);
 
         // Reconstruct meshes from frame
         frameType = reconstructFrame(frame);

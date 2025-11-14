@@ -83,7 +83,7 @@ size_t DepthOffsets::loadFromMemory(std::vector<char>& inputData) {
     }
     else {
         spdlog::warn("Failed to map depthOffsets PBO. Copying using loadFromData");
-        texture.loadFromData(inputData.data());
+        texture.loadFromData(inputData.data(), false, texture.width, texture.height);
     }
 
     uploadPBO.unbind();
