@@ -332,7 +332,7 @@ int main(int argc, char** argv) {
         poseStreamer.removePosesLessThan(currPoseID);
         // start rendering here before receiving new data to hide latency
  
-        renderStats = quasarReceiver.generateFrame(true, false, false);
+        // renderStats = quasarReceiver.generateFrame(true, false, false);
 
         QuadFrame::FrameType frameType = quasarReceiver.recvData();
         if (frameType != QuadFrame::FrameType::NONE) {

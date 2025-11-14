@@ -1,4 +1,5 @@
 #include <Receivers/QUASARReceiver.h>
+#include "nvtx3/nvToolsExt.h"
 
 using namespace quasar;
 
@@ -141,10 +142,12 @@ QuadFrame::FrameType QUASARReceiver::recvData() {
     QuadFrame::FrameType frameType = QuadFrame::FrameType::NONE;
 
     if (proxiesURL.empty()) {
+        spdlog::warn("QUASARReceiver proxiesURL is empty, cannot receive data.");
         return frameType;
     }
 
     if (!videoAtlasTexture.containsFrames()) {
+        spdlog::warn("QUASARReceiver video texture has no frames, cannot sync video and proxies.");
         return frameType;
     }
 
@@ -153,10 +156,13 @@ QuadFrame::FrameType QUASARReceiver::recvData() {
     {
         std::unique_lock<std::mutex> lock(m);
         if (!framePending) {
+            spdlog::warn("No pending frame available.");
             return frameType;
         }
 
         if (videoAtlasTexture.getLatestPoseID() < framePending->poseID) { // Video is behind, wait until video catches up
+            spdlog::info("Waiting for video to catch up. Video latest pose ID: {}, pending frame pose ID: {}",
+                         videoAtlasTexture.getLatestPoseID(), framePending->poseID);
             return frameType;
         }
 
@@ -165,6 +171,8 @@ QuadFrame::FrameType QUASARReceiver::recvData() {
         frameInUse = frame;
     }
 
+    spdlog::info("Wait for reference frame status: {}", waitUntilReferenceFrame ? "true" : "false");
+    spdlog::info("frame type is {}", frame->frameType == QuadFrame::FrameType::REFERENCE ? "Reference" : (frame->frameType == QuadFrame::FrameType::RESIDUAL ? "Residual" : "None"));
     // If video is ahead, search for a previous frame
     if (!videoAtlasTexture.containsFrameWithPoseID(frame->poseID)) {
         // This means we dropped a video frame. We have to wait for the next reference frame to resync
@@ -172,22 +180,27 @@ QuadFrame::FrameType QUASARReceiver::recvData() {
     }
     else if (!waitUntilReferenceFrame || (waitUntilReferenceFrame && frame->frameType == QuadFrame::FrameType::REFERENCE)) {
         // Update color texture
+        std::string nvtxRangeName = "QUASARReceiver::recvData " + std::to_string(frame->poseID);
+        nvtxRangePushA(nvtxRangeName.c_str());
         videoAtlasTexture.bind();
         videoAtlasTexture.draw(frame->poseID);
+
+        // For debug: save a copy of alpha texture
+        std::string frameData = std::string("debug_video_") + std::to_string(frame->poseID) + ".png";
+        spdlog::info("Writing video Atlas with PoseID {}", frame->poseID);
+        Path debugPath = Path(frameData);
+        videoAtlasTexture.writeToPNG(debugPath);
 
         // Update alpha texture
         alphaAtlasTexture.bind();
         alphaAtlasTexture.loadFromData(frame->bufferPool.alphaData.data());
-
-        // // For debug: save a copy of alpha texture
-        // Path debugPath = Path(std::string("debug_alpha_{}.png", frame->poseID));
-        // alphaAtlasTexture.writeToPNG(debugPath);
 
         // Reconstruct meshes from frame
         frameType = reconstructFrame(frame);
 
         // Video and proxies are synced now, no need to wait for reference frame anymore
         waitUntilReferenceFrame = false;
+        nvtxRangePop();
     }
 
     // Reset frame
@@ -510,7 +523,10 @@ QuadFrame::FrameType QUASARReceiver::reconstructFrame(std::shared_ptr<Frame> fra
         auto resMeshBufferSizes = residualFrameMesh.getBufferSizes();
         stats.totalTriangles += resMeshBufferSizes.numIndices / 3;
         stats.sizes = sizesUpdated + sizesRevealed;
+        
     }
+    spdlog::info("Reconstructed quads number is {}", stats.sizes.numQuads);
+    
 
     // Reconstruct hidden layers and wide FOV
     // Temporarily disable for performance testing

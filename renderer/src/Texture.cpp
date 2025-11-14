@@ -98,10 +98,13 @@ void Texture::loadFromData(const void* data, bool resize) {
 
         if (!array) {
             if (resize || data == nullptr) {
+                printf("Data is null or resizing, creating texture...\n");
                 glTexImage2D(target, 0, internalFormat, width, height, 0, format, type, data);
             }
             else {
+                printf("Updating texture data...\n");
                 glTexSubImage2D(target, 0, 0, 0, width, height, format, type, data);
+                glFinish();
             }
         }
         else {
