@@ -33,8 +33,10 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet,
         .magFilter = GL_NEAREST,
     }, videoURL)
     , alphaAtlasTexture({
+        // .width = 2 * quadSet.getSize().x,
+        // .height = 3 * quadSet.getSize().y,
         .width = 2 * quadSet.getSize().x,
-        .height = 3 * quadSet.getSize().y,
+        .height = quadSet.getSize().y,
         .internalFormat = GL_R8,
         .format = GL_RED,
         .type = GL_UNSIGNED_BYTE,
@@ -513,22 +515,22 @@ QuadFrame::FrameType QUASARReceiver::reconstructFrame(std::shared_ptr<Frame> fra
     // Reconstruct hidden layers and wide FOV
     // Temporarily disable for performance testing
     
-    for (int layer = 1; layer < maxLayers; layer++) {
-        auto sizes = quadSet.loadFromMemory(bufferPool.uncompressedQuads[layer], bufferPool.uncompressedOffsets[layer]);
-        referenceFrames[layer].numQuads = sizes.numQuads;
-        referenceFrames[layer].numDepthOffsets = sizes.numDepthOffsets;
-        stats.transferTimeMs += quadSet.stats.transferTimeMs;
+    // for (int layer = 1; layer < maxLayers; layer++) {
+    //     auto sizes = quadSet.loadFromMemory(bufferPool.uncompressedQuads[layer], bufferPool.uncompressedOffsets[layer]);
+    //     referenceFrames[layer].numQuads = sizes.numQuads;
+    //     referenceFrames[layer].numDepthOffsets = sizes.numDepthOffsets;
+    //     stats.transferTimeMs += quadSet.stats.transferTimeMs;
 
-        const auto& cameraToUse = getCameraToUse(layer);
-        startTime = timeutils::getTimeMicros();
-        meshes[layer].appendQuads(quadSet, gBufferSize);
-        meshes[layer].createMeshFromProxies(quadSet, gBufferSize, cameraToUse);
-        stats.createMeshTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    //     const auto& cameraToUse = getCameraToUse(layer);
+    //     startTime = timeutils::getTimeMicros();
+    //     meshes[layer].appendQuads(quadSet, gBufferSize);
+    //     meshes[layer].createMeshFromProxies(quadSet, gBufferSize, cameraToUse);
+    //     stats.createMeshTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
-        auto meshBufferSizes = meshes[layer].getBufferSizes();
-        stats.totalTriangles += meshBufferSizes.numIndices / 3;
-        stats.sizes += sizes;
-    }
+    //     auto meshBufferSizes = meshes[layer].getBufferSizes();
+    //     stats.totalTriangles += meshBufferSizes.numIndices / 3;
+    //     stats.sizes += sizes;
+    // }
 
     return frame->frameType;
 }

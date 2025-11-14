@@ -224,4 +224,10 @@ void FrameGenerator::createResidualFrame(
     residualFrame.depthOffsetsUpdated.resize(offsetsUpdatedFuture.get());
     residualFrame.depthOffsetsRevealed.resize(offsetsRevealedFuture.get());
     stats.compressTimeMs = residualFrame.getCompressTime();
+
+    spdlog::info("Residual quads number is {} updated + {} revealed = {}, depth offsets number is {} updated + {} revealed = {}",
+                 residualFrame.numQuadsUpdated, residualFrame.numQuadsRevealed, 
+                 residualFrame.numQuadsUpdated + residualFrame.numQuadsRevealed,
+                 residualFrame.numDepthOffsetsUpdated, residualFrame.numDepthOffsetsRevealed,
+                 residualFrame.numDepthOffsetsUpdated + residualFrame.numDepthOffsetsRevealed);
 }
