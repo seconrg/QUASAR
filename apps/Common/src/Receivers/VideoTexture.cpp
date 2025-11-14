@@ -313,6 +313,7 @@ pose_id_t VideoTexture::draw(pose_id_t poseID) {
     FrameData* frameData = nullptr;
     if (poseID != -1) {
         for (auto& f : frames) {
+            spdlog::info("VideoTexture: requested poseID {}, current {}", poseID, f.poseID);
             if (f.poseID == poseID) {
                 frameData = &f;
                 break;
@@ -327,9 +328,24 @@ pose_id_t VideoTexture::draw(pose_id_t poseID) {
         return prevPoseID;
     }
 
+    std::string framePath;
+    framePath = std::string("received_frame_") + std::to_string(poseID) + ".png";
+    spdlog::info("Writing received frame with PoseID {}", poseID);
+    FileIO::writeToPNG(framePath, videoWidth, videoHeight, 3, frameData->buffer.data());
+
+    framePath = std::string("debug_video_drawn_") + std::to_string(frameData->poseID) + ".png";
+    writeToPNG(framePath); 
+    spdlog::info("Video Size, width: {}, height: {}", videoWidth, videoHeight);
+    spdlog::info("Texture size, width: {}, height: {}", width, height);
+
     glPixelStorei(GL_UNPACK_ROW_LENGTH, videoWidth);
     loadFromData(frameData->buffer.data(), false);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    
+
+
+    framePath = std::string("debug_video_after") + std::to_string(frameData->poseID) + ".png";
+    writeToPNG(framePath); 
 
     prevPoseID = frameData->poseID;
     return frameData->poseID;

@@ -74,8 +74,10 @@ QUASARStreamer::QUASARStreamer(
         .magFilter = GL_NEAREST,
     })
     , videoAtlasStreamerRT({
+        // .width = 2 * quadSet.getSize().x,
+        // .height = 3 * quadSet.getSize().y,
         .width = 2 * quadSet.getSize().x,
-        .height = 3 * quadSet.getSize().y,
+        .height = quadSet.getSize().y,
         .internalFormat = GL_SRGB8_ALPHA8,
         .format = GL_RGBA,
         .type = GL_UNSIGNED_BYTE,
@@ -85,8 +87,10 @@ QUASARStreamer::QUASARStreamer(
         .magFilter = GL_NEAREST,
     }, params.videoURL, params.targetFramerate, params.targetBitRate)
     , alphaAtlasRT({
+        // .width = 2 * quadSet.getSize().x,
+        // .height = 3 * quadSet.getSize().y,
         .width = 2 * quadSet.getSize().x,
-        .height = 3 * quadSet.getSize().y,
+        .height = quadSet.getSize().y,
         .internalFormat = GL_R8,
         .format = GL_RED,
         .type = GL_UNSIGNED_BYTE,
@@ -301,7 +305,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     RenderStats renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
     stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
-    for (int layer = 0; layer < maxLayers; layer++) {
+    for (int layer = 0; layer < 1; layer++) {
         int hiddenLayerIndex = layer - 1;
 
         auto& remoteCameraToUse = (layer == 0 && createResidualFrame)
@@ -493,7 +497,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     // Update color and alpha atlases (tile frames side by side)
     uint row = 0, col = 0;
     uint dstWidth = referenceFrameRT.width, dstHeight = referenceFrameRT.height;
-    for (int layer = 0; layer < maxLayers; layer++) {
+    for (int layer = 0; layer < 1; layer++) {
         if (layer == 0) {
             referenceFrameRT.blit(videoAtlasStreamerRT,
                 0, 0, referenceFrameRT.width, referenceFrameRT.height,
