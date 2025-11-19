@@ -12,7 +12,7 @@ FrameGenerator::FrameGenerator(QuadSet& quadSet)
 
 void FrameGenerator::createReferenceFrame(
     const FrameRenderTarget& referenceFrameRT, const PerspectiveCamera& remoteCamera,
-    QuadMesh& referenceMesh,
+    QuadMesh& referenceMesh, bool generateMesh, 
     ReferenceFrame& referenceFrame)
 {
     stats = { 0 };
@@ -46,12 +46,14 @@ void FrameGenerator::createReferenceFrame(
     });
 
     // Using GPU buffers, reconstruct mesh using proxies
-    startTime = timeutils::getTimeMicros();
-    referenceMesh.appendQuads(quadSet, gBufferSize);
-    referenceMesh.createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
-    stats.appendQuadsTimeMs = referenceMesh.stats.appendQuadsTimeMs;
-    stats.createVertIndTimeMs = referenceMesh.stats.createMeshTimeMs;
-    stats.createMeshTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    if (generateMesh) {
+        startTime = timeutils::getTimeMicros();
+        referenceMesh.appendQuads(quadSet, gBufferSize);
+        referenceMesh.createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
+        stats.appendQuadsTimeMs = referenceMesh.stats.appendQuadsTimeMs;
+        stats.createVertIndTimeMs = referenceMesh.stats.createMeshTimeMs;
+        stats.createMeshTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    }
 
     /*
     ============================

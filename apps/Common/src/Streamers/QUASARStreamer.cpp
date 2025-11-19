@@ -1,4 +1,6 @@
 #include <Streamers/QUASARStreamer.h>
+#include "nvtx3/nvToolsExt.h"
+#include <string>
 
 using namespace quasar;
 
@@ -305,7 +307,11 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     RenderStats renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
     stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
-    for (int layer = 0; layer < 1; layer++) {
+    for (int layer = 0; layer < 2; layer++) {
+
+        std::string layerStr = (layer == 0) ? "Reference Frame" : "Hidden Layer " + std::to_string(layer - 1);
+        nvtxRangePushA(layerStr.c_str());
+
         int hiddenLayerIndex = layer - 1;
 
         auto& remoteCameraToUse = (layer == 0 && createResidualFrame)
@@ -363,13 +369,30 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
             quadsGenerator->params.planeSimilarityThreshold *= (layer * 2.0f);
             quadsGenerator->params.expandEdges = false;
         }
+        
+        // if layer is not 0 or it is not creating residual frame, create reference frame
+        // if (layer != 0 || !createResidualFrame) {
+            
+        //     ReferenceFrame dummyFrame;
+        //     frameGenerator.createReferenceFrame(
+        //         (layer != 0 && layer != maxLayers - 1) ? renderTargetToUse_noTone : renderTargetToUse,
+        //         remoteCameraToUse,
+        //         meshToUse,
+        //         layer == 0,
+        //         (layer == 0 && createResidualFrame) ? dummyFrame : referenceFrames[layer] // Don't save output of this reference frame if we are making a residual frame
+        //     );
+
+        // }
         ReferenceFrame dummyFrame;
         frameGenerator.createReferenceFrame(
             (layer != 0 && layer != maxLayers - 1) ? renderTargetToUse_noTone : renderTargetToUse,
             remoteCameraToUse,
             meshToUse,
+            layer == 0,
             (layer == 0 && createResidualFrame) ? dummyFrame : referenceFrames[layer] // Don't save output of this reference frame if we are making a residual frame
         );
+        // TODO: Check whether this is useful? It seems to just dump things to screen 
+        
         if (!showNormals) {
             if (layer == 0) {
                 remoteRenderer.copyToFrameRT(referenceFrameRT_noTone);
@@ -393,11 +416,6 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         stats.totalSimplifyTimeMs += frameGenerator.stats.simplifyQuadsTimeMs;
         stats.totalGatherQuadsTime += frameGenerator.stats.gatherQuadsTimeMs;
         stats.totalCreateProxiesTimeMs += frameGenerator.stats.createQuadsTimeMs;
-
-        spdlog::info("    Layer {}: Created reference proxies in {} ms", 
-                     layer, frameGenerator.stats.createQuadsTimeMs);
-        spdlog::info("    Layer {}: Created reference frame mesh in {} ms", 
-                     layer, frameGenerator.stats.createMeshTimeMs);
         
 
         stats.totalAppendQuadsTimeMs += frameGenerator.stats.appendQuadsTimeMs;
@@ -405,8 +423,6 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         stats.totalCreateMeshTimeMs += frameGenerator.stats.createMeshTimeMs;
 
         if (!createResidualFrame || layer != 0) {
-            spdlog::info("    Layer {}: compressed reference frame in {} ms", 
-                          layer, frameGenerator.stats.compressTimeMs);
             stats.totalCompressTimeMs += frameGenerator.stats.compressTimeMs;
         }
 
@@ -501,6 +517,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
                           residualFrame.getTotalNumDepthOffsetsUpdated(), residualFrame.getTotalDepthOffsetsUpdatedSize() / BYTES_PER_MEGABYTE,
                           residualFrame.getTotalNumDepthOffsetsRevealed(), residualFrame.getTotalDepthOffsetsRevealedSize() / BYTES_PER_MEGABYTE);
         }
+        nvtxRangePop();
     }
 
     // Update color and alpha atlases (tile frames side by side)
@@ -542,6 +559,9 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
             }
         }
     }
+
+    nvtxRangePushA("Blit Residual Frame to Atlas");
+
     residualFrameRT.blit(videoAtlasStreamerRT,
         0, 0, residualFrameRT.width, residualFrameRT.height,
         col, row, dstWidth, dstHeight
@@ -550,6 +570,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         0, 0, residualFrameRT_noTone.width, residualFrameRT_noTone.height,
         col, row, dstWidth, dstHeight
     );
+    nvtxRangePop();
 
     return renderStats;
 }
@@ -558,6 +579,7 @@ void QUASARStreamer::sendFrame(pose_id_t poseID, bool createResidualFrame) {
     stats.frameSize = writeToMemory(poseID, createResidualFrame, compressedData);
     if (!videoURL.empty() && !proxiesURL.empty()) {
         // Send atlas frame
+        spdlog::info("Sending atlas frame for pose ID {}", poseID);
         videoAtlasStreamerRT.sendFrame(poseID);
         // Send proxies
         send(compressedData);
@@ -607,7 +629,13 @@ size_t QUASARStreamer::writeToFiles(const Path& outputPath, int frameCounter) {
     }
     totalOutputSize += residualFrame.writeToFiles(outputPath);
 
-    spdlog::debug("Written output data size: {}", totalOutputSize);
+
+    // write based on frame counter
+    char pathbuffer[64];
+    snprintf(pathbuffer, sizeof(pathbuffer), "atlasFrame_%04d.jpg", frameCounter);
+    Path framePath = outputPath / std::string(pathbuffer);
+    videoAtlasStreamerRT.writeColorAsJPG(framePath);
+
     return totalOutputSize;
 }
 

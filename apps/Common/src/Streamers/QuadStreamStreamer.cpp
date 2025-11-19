@@ -187,6 +187,7 @@ RenderStats QuadStreamStreamer::generateFrame(bool showNormals, bool showDepth) 
         frameGenerator.createReferenceFrame(
             renderTargetToUse, remoteCameraToUse,
             meshToUse,
+            true,
             referenceFrames[view]
         );
         if (!showNormals) {

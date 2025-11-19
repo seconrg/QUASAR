@@ -517,6 +517,8 @@ int main(int argc, char** argv) {
         }
         totalDT += dt;
 
+        spdlog::info("RerenderIntervalMs: {:.3f}ms", rerenderIntervalMs);
+
         if (rerenderIntervalMs > 0.0 && (now - lastRenderTime) >= timeutils::millisToSeconds(rerenderIntervalMs - 1.0)) {
             sendReferenceFrame = (frameCounter++) % refFrameInterval == 0; // insert Reference Frame every refFrameInterval frames
             sendResidualFrame = !sendReferenceFrame;

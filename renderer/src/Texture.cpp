@@ -98,11 +98,11 @@ void Texture::loadFromData(const void* data, bool resize, int target_width, int 
 
         if (!array) {
             if (resize || data == nullptr) {
-                printf("Loading texture data: %dx%d\n", target_width, target_height);
+                // printf("Loading texture data: %dx%d\n", target_width, target_height);
                 glTexImage2D(target, 0, internalFormat, target_width, target_height, 0, format, type, data);
             }
             else {
-                printf("Updating texture data: %dx%d\n", target_width, target_height);
+                // printf("Updating texture data: %dx%d\n", target_width, target_height);
                 glTexSubImage2D(target, 0, 0, 0, target_width, target_height, format, type, data);
             }
         }

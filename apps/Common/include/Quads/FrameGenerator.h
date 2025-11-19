@@ -39,6 +39,7 @@ public:
         const FrameRenderTarget& referenceFrameRT,
         const PerspectiveCamera& remoteCamera,
         QuadMesh& referenceMesh,
+        bool generateMesh,
         ReferenceFrame& referenceFrame);
 
     void updateResidualRenderTargets(

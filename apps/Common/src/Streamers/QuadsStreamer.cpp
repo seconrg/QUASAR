@@ -204,6 +204,7 @@ RenderStats QuadsStreamer::generateFrame(bool createResidualFrame, bool showNorm
         referenceFrameRT,
         remoteCameraToUse,
         referenceFrameMeshes[currMeshIndex],
+        true,
         createResidualFrame ? dummyFrame : referenceFrame // Don't save output of this reference frame if we are making a residual frame
     );
     if (!showNormals) {

@@ -139,7 +139,7 @@ int main(int argc, char** argv) {
 
     bool* showLayers = new bool[maxLayers];
     for (int i = 0; i < maxLayers; i++) {
-        showLayers[i] = true;
+        showLayers[i] = false;
     }
 
     RenderStats renderStats;

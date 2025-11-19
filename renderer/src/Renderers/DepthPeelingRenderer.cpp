@@ -1,5 +1,6 @@
 #include <Cameras/VRCamera.h>
 #include <Renderers/DepthPeelingRenderer.h>
+#include "nvtx3/nvToolsExt.h"
 
 using namespace quasar;
 
@@ -116,9 +117,11 @@ RenderStats DepthPeelingRenderer::drawSceneByLayer(Scene& scene, const Camera& c
 
 RenderStats DepthPeelingRenderer::drawScene(Scene& scene, const Camera& camera, uint32_t clearMask) {
     RenderStats stats;
-        
+    spdlog::info("Depth Peeling: Drawing scene with {} layers", maxLayers);
     for (int i = 0; i < maxLayers; i++) {
+        nvtxRangePushA(("Draw Layer " + std::to_string(i)).c_str());
         stats += drawSceneByLayer(scene, camera, i,clearMask);
+        nvtxRangePop();
     }
 
     return stats;
@@ -180,7 +183,8 @@ RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera
                 stats += drawSceneByLayer(scene, camera, i,clearMask);
             }
         }
-
+        
+        nvtxRangePushA("Draw Lights");
         // Draw lights for debugging
         stats += drawLights(scene, camera);
 
@@ -188,6 +192,7 @@ RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera
 
         // Composite layers
         stats += compositeLayers();
+        nvtxRangePop();
     }
 
     return stats;

@@ -232,6 +232,7 @@ RenderStats QUASARReceiver::generateFrame(bool createResidualFrame, bool showNor
             frameToUse_noTone, 
             cameraToUse,
             meshToUse,
+            true,
             referenceFrames[layer]
         );
 
