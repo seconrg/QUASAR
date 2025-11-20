@@ -1,4 +1,5 @@
 #include <Streamers/QUASARStreamer.h>
+#include "nvtx3/nvToolsExt.h"
 
 using namespace quasar;
 
@@ -13,6 +14,8 @@ QUASARStreamer::QUASARStreamer(
     , videoURL(params.videoURL)
     , proxiesURL(params.proxiesURL)
     , maxLayers(params.maxLayers)
+    , layerIndices(params.layerIndices)
+    , wide_fov_layer_index(params.wide_fov_layer_index)
     , remoteRenderer(remoteRenderer)
     , remoteRendererDP(remoteRendererDP)
     , remoteScene(remoteScene)
@@ -115,8 +118,10 @@ QUASARStreamer::QUASARStreamer(
 
     referenceFrames.resize(maxLayers);
     geometryMetadatas.resize(maxLayers);
-
-    uint numHidLayers = maxLayers - 1;
+    
+    bool hasTraiditonLayer = (layerIndices[0] == 0);
+    bool hasWideFovLayer = (layerIndices.back() == wide_fov_layer_index);
+    uint numHidLayers = maxLayers - (static_cast<uint>(hasTraiditonLayer));
     frameRTsHidLayer.reserve(numHidLayers);
     frameRTsHidLayer_noTone.reserve(numHidLayers);
     meshesHidLayer.reserve(numHidLayers);
@@ -269,8 +274,8 @@ void QUASARStreamer::addMeshesToScene(Scene& localScene) {
         localScene.addChildNode(&referenceFrameNodesLocal[i]);
         localScene.addChildNode(&referenceFrameWireframesLocal[i]);
     }
-    localScene.addChildNode(&residualFrameNodeLocal);
-    localScene.addChildNode(&residualFrameWireframeLocal);
+    // localScene.addChildNode(&residualFrameNodeLocal);
+    // localScene.addChildNode(&residualFrameWireframeLocal);
     localScene.addChildNode(&depthNode);
 }
 
@@ -279,7 +284,7 @@ void QUASARStreamer::setViewSphereDiameter(float viewSphereDiameter) {
     remoteRendererDP.setViewSphereDiameter(viewSphereDiameter);
 }
 
-RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNormals, bool showDepth) {
+RenderStats QUASARStreamer::generateFrame(bool showNormals, bool showDepth) {
     // Reset stats
     Stats prevStats = stats;
     stats = { 0 };
@@ -305,30 +310,41 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     RenderStats renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
     stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
-    for (int layer = 0; layer < 1; layer++) {
-        int hiddenLayerIndex = layer - 1;
+    int hiddenLayerIndex = 0;
+    for (int lid = 0; lid < maxLayers; lid++) {
+        // int hiddenLayerIndex = layer - 1;
+        int layer = layerIndices[lid];
+        bool hasTraiditonLayer = (layerIndices[0] == 0);
+        bool isHiddenLayer = (layer != 0 && layer != wide_fov_layer_index);
 
-        auto& remoteCameraToUse = (layer == 0 && createResidualFrame)
-                                    ? remoteCameraPrev
-                                    : ((layer != maxLayers - 1) ? remoteCamera : remoteCameraWideFOV);
+        int hiddenLayerPeelingIndex = lid;
+
+        spdlog::info("Generating Reference Frame for Layer {} with iter index {}", layer, lid);
+        if (layer == wide_fov_layer_index) {
+            spdlog::info("  (This is the wide FOV layer)");
+        } else if  (layer == 0) {
+            spdlog::info("  (This is the primary layer)");
+        } else {
+            spdlog::info("  (This is a hidden layer) {}", hiddenLayerIndex);
+        }
+
+        auto& remoteCameraToUse = (layer != wide_fov_layer_index) ? remoteCamera : remoteCameraWideFOV;
 
         auto& renderTargetToUse        = (layer == 0) ? referenceFrameRT        : frameRTsHidLayer[hiddenLayerIndex];
         auto& renderTargetToUse_noTone = (layer == 0) ? referenceFrameRT_noTone : frameRTsHidLayer_noTone[hiddenLayerIndex];
 
         auto& meshToUse      = (layer == 0) ? referenceFrameMeshes[currMeshIndex] : meshesHidLayer[hiddenLayerIndex];
         auto& meshToUseDepth = (layer == 0) ? depthMesh                           : depthMeshesHidLayer[hiddenLayerIndex];
-
+        
+        
         startTime = timeutils::getTimeMicros();
         if (layer == 0) {
             renderStats += remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCameraToUse);
             remoteRenderer.copyToFrameRT(renderTargetToUse);
         }
-        else if (layer < maxLayers - 1) {
-            // Hidden layers need to use the noTone render targets to generate quads for some reason...
-            remoteRendererDP.peelingLayers[hiddenLayerIndex+1].blit(renderTargetToUse_noTone);
-        }
         // Wide fov camera
-        else {
+        else if (layer == wide_fov_layer_index) {
+            nvtxRangePushA("Render for wide fov");
             // Draw old center mesh at new remoteCamera layer, filling stencil buffer with 1
             remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
             remoteRenderer.pipeline.writeMaskState.disableColorWrites();
@@ -344,6 +360,11 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
 
             remoteRenderer.pipeline.stencilState.restoreStencilState();
             remoteRenderer.copyToFrameRT(renderTargetToUse);
+            nvtxRangePop();
+            spdlog::info("  Wide FOV render complete");
+        } else {
+            // Hidden layers need to use the noTone render targets to generate quads for some reason...
+            remoteRendererDP.peelingLayers[hiddenLayerPeelingIndex].blit(renderTargetToUse_noTone);
         }
         stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
@@ -354,7 +375,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         */
         auto oldParams = quadsGenerator->params;
         // Wide FOV has very loose parameters to reduce data size
-        if (layer == maxLayers - 1) {
+        if (layer == wide_fov_layer_index) {
             quadsGenerator->params.planeSimilarityThreshold *= 4.0f;
             quadsGenerator->params.expandEdges = true;
         }
@@ -363,19 +384,21 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
             quadsGenerator->params.planeSimilarityThreshold *= (layer * 2.0f);
             quadsGenerator->params.expandEdges = false;
         }
-        ReferenceFrame dummyFrame;
+        nvtxRangePushA(("Generate Reference Frame Layer " +  std::to_string(layer)).c_str());
         frameGenerator.createReferenceFrame(
-            (layer != 0 && layer != maxLayers - 1) ? renderTargetToUse_noTone : renderTargetToUse,
+            (layer != 0 && layer != wide_fov_layer_index) ? renderTargetToUse_noTone : renderTargetToUse,
             remoteCameraToUse,
             meshToUse,
-            (layer == 0 && createResidualFrame) ? dummyFrame : referenceFrames[layer] // Don't save output of this reference frame if we are making a residual frame
+            // (layer == 0 && createResidualFrame) ? dummyFrame : referenceFrames[layer] // Don't save output of this reference frame if we are making a residual frame
+            referenceFrames[layer]
         );
+        nvtxRangePop();
         if (!showNormals) {
             if (layer == 0) {
                 remoteRenderer.copyToFrameRT(referenceFrameRT_noTone);
                 tonemapper.drawToRenderTarget(remoteRenderer, referenceFrameRT);
             }
-            else if (layer < maxLayers - 1) {
+            else if (layer != wide_fov_layer_index) {
                 tonemapper.setUniforms(renderTargetToUse_noTone);
                 tonemapper.drawToRenderTarget(remoteRenderer, renderTargetToUse, false);
             }
@@ -404,152 +427,91 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         stats.totalCreateVertIndTimeMs += frameGenerator.stats.createVertIndTimeMs;
         stats.totalCreateMeshTimeMs += frameGenerator.stats.createMeshTimeMs;
 
-        if (!createResidualFrame || layer != 0) {
-            spdlog::info("    Layer {}: compressed reference frame in {} ms", 
-                          layer, frameGenerator.stats.compressTimeMs);
-            stats.totalCompressTimeMs += frameGenerator.stats.compressTimeMs;
-        }
-
+        // if (!createResidualFrame || layer != 0) {
+        //     spdlog::info("    Layer {}: compressed reference frame in {} ms", 
+        //                   layer, frameGenerator.stats.compressTimeMs);
+        //     stats.totalCompressTimeMs += frameGenerator.stats.compressTimeMs;
+        // }
         /*
         ============================
         Generate Residual Frame, especially for layer 0
         ============================
         */
         if (layer == 0) {
-            if (createResidualFrame) {
-                /*
-                ============================
-                Generate masked Residual Frame textures
-                ============================
-                */
-                frameGenerator.updateResidualRenderTargets(
-                    residualFrameMaskRT, residualFrameRT,
-                    remoteRenderer, remoteScene,
-                    meshScenes[currMeshIndex], meshScenes[prevMeshIndex],
-                    remoteCamera, remoteCameraPrev
-                );
+            // Only update the previous camera pose if we are not generating a Residual Frame
+            remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
+            remoteCameraPrev.setViewMatrix(remoteCamera.getViewMatrix());
+            lastMeshIndex = meshIndex;
+            meshIndex++;
 
-                /*
-                ============================
-                Generate Residual Frame
-                ============================
-                */
-                quadsGenerator->params.expandEdges = true;
-                frameGenerator.createResidualFrame(
-                    residualFrameMaskRT, residualFrameRT,
-                    remoteCamera, remoteCameraPrev,
-                    referenceFrameMeshes[prevMeshIndex], residualFrameMesh,
-                    residualFrame
-                );
-                if (!showNormals) {
-                    residualFrameRT.blit(residualFrameRT_noTone);
-                    tonemapper.setUniforms(residualFrameRT_noTone);
-                    tonemapper.drawToRenderTarget(remoteRenderer, residualFrameRT, false);
-                }
-                else {
-                    showNormalsEffect.drawToRenderTarget(remoteRenderer, residualFrameRT_noTone);
-                }
-
-                stats.totalRenderTimeMs += frameGenerator.stats.updateRTsTimeMs;
-
-                stats.totalGenQuadMapTimeMs += frameGenerator.stats.generateQuadsTimeMs;
-                stats.totalSimplifyTimeMs += frameGenerator.stats.simplifyQuadsTimeMs;
-                stats.totalGatherQuadsTime += frameGenerator.stats.gatherQuadsTimeMs;
-                stats.totalCreateProxiesTimeMs += frameGenerator.stats.createQuadsTimeMs;
-
-                stats.totalAppendQuadsTimeMs += frameGenerator.stats.appendQuadsTimeMs;
-                stats.totalCreateVertIndTimeMs += frameGenerator.stats.createVertIndTimeMs;
-                stats.totalCreateMeshTimeMs += frameGenerator.stats.createMeshTimeMs;
-
-                stats.totalCompressTimeMs += frameGenerator.stats.compressTimeMs;
-            }
-            else {
-                // Only update the previous camera pose if we are not generating a Residual Frame
-                remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
-                remoteCameraPrev.setViewMatrix(remoteCamera.getViewMatrix());
-                lastMeshIndex = meshIndex;
-                meshIndex++;
-            }
-
-            residualFrameNode.visible = createResidualFrame;
+            residualFrameNode.visible = false;
         }
 
         // For debugging: Generate point cloud from depth map
         if (showDepth) {
-            meshToUseDepth.update((layer != maxLayers - 1) ? remoteCamera : remoteCameraWideFOV, renderTargetToUse);
+            meshToUseDepth.update((layer != wide_fov_layer_index) ? remoteCamera : remoteCameraWideFOV, renderTargetToUse);
             stats.totalGenDepthTimeMs += meshToUseDepth.stats.genDepthTime;
         }
+
+        hiddenLayerIndex += isHiddenLayer ? 1 : 0;
         
         // if it is not creating residual frame or it is not the first layer, accumulate sizes
-        if (!(createResidualFrame && layer == 0)) {
-            stats.proxySizes.numQuads += referenceFrames[layer].getTotalNumQuads();
-            stats.proxySizes.numDepthOffsets += referenceFrames[layer].getTotalNumDepthOffsets();
-            stats.proxySizes.quadsSize += referenceFrames[layer].getTotalQuadsSize();
-            stats.proxySizes.depthOffsetsSize += referenceFrames[layer].getTotalDepthOffsetsSize();
-            spdlog::debug("Reference frame generated with {} quads ({:.3f}MB), {} depth offsets ({:.3f}MB)",
-                          referenceFrames[layer].getTotalNumQuads(), referenceFrames[layer].getTotalQuadsSize() / BYTES_PER_MEGABYTE,
-                          referenceFrames[layer].getTotalNumDepthOffsets(), referenceFrames[layer].getTotalDepthOffsetsSize() / BYTES_PER_MEGABYTE);
-        }
-        else {
-            stats.proxySizes.numQuads += residualFrame.getTotalNumQuads();
-            stats.proxySizes.numDepthOffsets += residualFrame.getTotalNumDepthOffsets();
-            stats.proxySizes.quadsSize += residualFrame.getTotalQuadsSize();
-            stats.proxySizes.depthOffsetsSize += residualFrame.getTotalDepthOffsetsSize();
-            spdlog::debug("Residual frame generated with {} updated quads ({:.3f}MB) and {} revealed quads ({:.3f}MB), {} updated depth offsets ({:.3f}MB) and {} revealed depth offsets ({:.3f}MB)",
-                          residualFrame.getTotalNumQuadsUpdated(), residualFrame.getTotalQuadsUpdatedSize() / BYTES_PER_MEGABYTE,
-                          residualFrame.getTotalNumQuadsRevealed(), residualFrame.getTotalQuadsRevealedSize() / BYTES_PER_MEGABYTE,
-                          residualFrame.getTotalNumDepthOffsetsUpdated(), residualFrame.getTotalDepthOffsetsUpdatedSize() / BYTES_PER_MEGABYTE,
-                          residualFrame.getTotalNumDepthOffsetsRevealed(), residualFrame.getTotalDepthOffsetsRevealedSize() / BYTES_PER_MEGABYTE);
-        }
+        stats.proxySizes.numQuads += referenceFrames[layer].getTotalNumQuads();
+        stats.proxySizes.numDepthOffsets += referenceFrames[layer].getTotalNumDepthOffsets();
+        stats.proxySizes.quadsSize += referenceFrames[layer].getTotalQuadsSize();
+        stats.proxySizes.depthOffsetsSize += referenceFrames[layer].getTotalDepthOffsetsSize();
+        spdlog::debug("Reference frame generated with {} quads ({:.3f}MB), {} depth offsets ({:.3f}MB)",
+                        referenceFrames[layer].getTotalNumQuads(), referenceFrames[layer].getTotalQuadsSize() / BYTES_PER_MEGABYTE,
+                        referenceFrames[layer].getTotalNumDepthOffsets(), referenceFrames[layer].getTotalDepthOffsetsSize() / BYTES_PER_MEGABYTE);
     }
 
     // Update color and alpha atlases (tile frames side by side)
     uint row = 0, col = 0;
     uint dstWidth = referenceFrameRT.width, dstHeight = referenceFrameRT.height;
-    for (int layer = 0; layer < 1; layer++) {
-        if (layer == 0) {
-            referenceFrameRT.blit(videoAtlasStreamerRT,
-                0, 0, referenceFrameRT.width, referenceFrameRT.height,
-                col, row, dstWidth, dstHeight
-            );
-            referenceFrameRT.blit(alphaAtlasRT,
-                0, 0, referenceFrameRT.width, referenceFrameRT.height,
-                col, row, dstWidth, dstHeight
-            );
-        }
-        else {
-            int hiddenLayerIndex = layer - 1;
-            frameRTsHidLayer[hiddenLayerIndex].blit(videoAtlasStreamerRT,
-                0, 0, frameRTsHidLayer[hiddenLayerIndex].width, frameRTsHidLayer[hiddenLayerIndex].height,
-                col, row, dstWidth, dstHeight
-            );
-            frameRTsHidLayer_noTone[hiddenLayerIndex].blit(alphaAtlasRT,
-                0, 0, frameRTsHidLayer_noTone[hiddenLayerIndex].width, frameRTsHidLayer_noTone[hiddenLayerIndex].height,
-                col, row, dstWidth, dstHeight
-            );
-        }
-        col += referenceFrameRT.width;
-        dstWidth += referenceFrameRT.width;
-        if (col >= videoAtlasStreamerRT.width) {
-            col = 0;
-            dstWidth = referenceFrameRT.width;
+    // for (int layer = 0; layer < 1; layer++) {
+    //     if (layer == 0) {
+    //         referenceFrameRT.blit(videoAtlasStreamerRT,
+    //             0, 0, referenceFrameRT.width, referenceFrameRT.height,
+    //             col, row, dstWidth, dstHeight
+    //         );
+    //         referenceFrameRT.blit(alphaAtlasRT,
+    //             0, 0, referenceFrameRT.width, referenceFrameRT.height,
+    //             col, row, dstWidth, dstHeight
+    //         );
+    //     }
+    //     else {
+    //         int hiddenLayerIndex = layer - 1;
+    //         frameRTsHidLayer[hiddenLayerIndex].blit(videoAtlasStreamerRT,
+    //             0, 0, frameRTsHidLayer[hiddenLayerIndex].width, frameRTsHidLayer[hiddenLayerIndex].height,
+    //             col, row, dstWidth, dstHeight
+    //         );
+    //         frameRTsHidLayer_noTone[hiddenLayerIndex].blit(alphaAtlasRT,
+    //             0, 0, frameRTsHidLayer_noTone[hiddenLayerIndex].width, frameRTsHidLayer_noTone[hiddenLayerIndex].height,
+    //             col, row, dstWidth, dstHeight
+    //         );
+    //     }
+    //     col += referenceFrameRT.width;
+    //     dstWidth += referenceFrameRT.width;
+    //     if (col >= videoAtlasStreamerRT.width) {
+    //         col = 0;
+    //         dstWidth = referenceFrameRT.width;
 
-            row += referenceFrameRT.height;
-            dstHeight += referenceFrameRT.height;
-            if (row >= videoAtlasStreamerRT.height) {
-                row = 0;
-                dstHeight = referenceFrameRT.height;
-            }
-        }
-    }
-    residualFrameRT.blit(videoAtlasStreamerRT,
-        0, 0, residualFrameRT.width, residualFrameRT.height,
-        col, row, dstWidth, dstHeight
-    );
-    residualFrameRT_noTone.blit(alphaAtlasRT,
-        0, 0, residualFrameRT_noTone.width, residualFrameRT_noTone.height,
-        col, row, dstWidth, dstHeight
-    );
+    //         row += referenceFrameRT.height;
+    //         dstHeight += referenceFrameRT.height;
+    //         if (row >= videoAtlasStreamerRT.height) {
+    //             row = 0;
+    //             dstHeight = referenceFrameRT.height;
+    //         }
+    //     }
+    // }
+    // residualFrameRT.blit(videoAtlasStreamerRT,
+    //     0, 0, residualFrameRT.width, residualFrameRT.height,
+    //     col, row, dstWidth, dstHeight
+    // );
+    // residualFrameRT_noTone.blit(alphaAtlasRT,
+    //     0, 0, residualFrameRT_noTone.width, residualFrameRT_noTone.height,
+    //     col, row, dstWidth, dstHeight
+    // );
 
     return renderStats;
 }

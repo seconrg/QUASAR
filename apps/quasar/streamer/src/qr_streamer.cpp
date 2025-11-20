@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
     ForwardRenderer renderer(config);
     config.width = remoteWindowSize.x;
     config.height = remoteWindowSize.y;
-    DepthPeelingRenderer remoteRendererDP(config, maxLayers - 1, true); // DP layers doesn't include wide fov
+    DepthPeelingRenderer remoteRendererDP(config, maxLayers - 1, {0, 1, 2, 3, 4}, true); // DP layers doesn't include wide fov
     DeferredRenderer remoteRenderer(config);
 
     // "Remote" scene
@@ -375,7 +375,7 @@ int main(int argc, char** argv) {
 
                 double frameStartTime = timeutils::getTimeMicros();
                 spdlog::info("Time elapse between last send and current frame start: {:.3f}ms", timeutils::microsToMillis(frameStartTime - lastSendTime));
-                renderStats = quasar.generateFrame(sendResidualFrame, showNormals, showDepth);
+                renderStats = quasar.generateFrame(showNormals, showDepth);
                 // generate frame time
                 double frameEndTime = timeutils::getTimeMicros();
                 double frameTime = frameEndTime - frameStartTime;

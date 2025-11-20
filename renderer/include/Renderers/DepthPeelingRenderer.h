@@ -10,12 +10,13 @@ namespace quasar {
 class DepthPeelingRenderer : public DeferredRenderer {
 public:
     uint maxLayers;
+    std::vector<int> layerIndices;
     float viewSphereDiameter = 0.5f;
     float edpDelta = 0.0005f;
 
     std::vector<FrameRenderTarget> peelingLayers;
 
-    DepthPeelingRenderer(const Config& config, uint maxLayers = 4, bool edp = false);
+    DepthPeelingRenderer(const Config& config, uint maxLayers = 4, const std::vector<int>& layerIndices = {}, bool edp = false);
     ~DepthPeelingRenderer() = default;
 
     void setViewSphereDiameter(float viewSphereDiameter) { this->viewSphereDiameter = viewSphereDiameter; }

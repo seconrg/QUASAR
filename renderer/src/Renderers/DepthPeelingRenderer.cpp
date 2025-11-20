@@ -1,10 +1,12 @@
 #include <Cameras/VRCamera.h>
 #include <Renderers/DepthPeelingRenderer.h>
+#include "nvtx3/nvToolsExt.h"
 
 using namespace quasar;
 
-DepthPeelingRenderer::DepthPeelingRenderer(const Config& config, uint maxLayers, bool edp)
+DepthPeelingRenderer::DepthPeelingRenderer(const Config& config, uint maxLayers, const std::vector<int>& layerIndices, bool edp)
     : maxLayers(maxLayers)
+    , layerIndices(layerIndices)
     , edp(edp)
     , DeferredRenderer(config)
     , compositeLayersShader({
@@ -70,12 +72,13 @@ RenderStats DepthPeelingRenderer::drawSceneByLayer(Scene& scene, const Camera& c
     if (clearMask != 0) {
         gBuffer.clear(clearMask);
     }
-    uint layer = layerIndex;
+    uint layer = layerIndices[layerIndex];
+    spdlog::info("Drawing depth peeling layer {}, iter index is {}", layer, layerIndex);
 
     // Disable blending
     pipeline.blendState.blendEnabled = false; pipeline.apply();
 
-    const Texture* prevIDMap = (layer >= 1) ? &peelingLayers[layer-1].idTexture : nullptr;
+    const Texture* prevIDMap = (layerIndex >= 1) ? &peelingLayers[layerIndex-1].idTexture : nullptr;
 
     // Set layer index in shaders
     if (LitMaterial::deferredShader != nullptr) {
@@ -105,12 +108,11 @@ RenderStats DepthPeelingRenderer::drawSceneByLayer(Scene& scene, const Camera& c
     stats += lightingPass(scene, camera);
 
     // Draw skybox (only in last layer)
-    if (layer == maxLayers - 1) {
+    if (layerIndex == maxLayers - 1) {
         stats += drawSkyBox(scene, camera);
     }
 
-    copyToFrameRT(peelingLayers[layer]);
-
+    copyToFrameRT(peelingLayers[layerIndex]);
     return stats;
 }
 
@@ -118,7 +120,9 @@ RenderStats DepthPeelingRenderer::drawScene(Scene& scene, const Camera& camera, 
     RenderStats stats;
         
     for (int i = 0; i < maxLayers; i++) {
+        nvtxRangePushA(("Depth Peeling Layer " + std::to_string(i)).c_str());
         stats += drawSceneByLayer(scene, camera, i,clearMask);
+        nvtxRangePop();
     }
 
     return stats;
@@ -173,12 +177,10 @@ RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera
         updatePointLightShadows(scene, camera);
 
         // Draw all objects in the scene
-        if (renderFrontEnd) {
-            stats += drawScene(scene, camera, clearMask);
-        } else {
-            for (int i = 1; i < maxLayers; i++) {
-                stats += drawSceneByLayer(scene, camera, i,clearMask);
-            }
+        for (int i=0; i < maxLayers; i++) {
+            nvtxRangePushA(("Depth Peeling Layer " + std::to_string(i)).c_str());
+            stats += drawSceneByLayer(scene, camera, i, clearMask);
+            nvtxRangePop();
         }
 
         // Draw lights for debugging

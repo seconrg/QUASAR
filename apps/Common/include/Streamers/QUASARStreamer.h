@@ -18,6 +18,8 @@ namespace quasar {
 
 struct QUASARStreamerCreateParams {
     uint maxLayers = 5;
+    uint wide_fov_layer_index = 4;
+    std::vector<int> layerIndices = {0, 1, 2, 3, 4};
     float viewSphereDiameter = 1.0f;
     float wideFOV = 140.0f;
     uint targetFramerate = 5;
@@ -29,6 +31,8 @@ struct QUASARStreamerCreateParams {
 class QUASARStreamer : public DataStreamerTCP {
 public:
     uint maxLayers;
+    uint wide_fov_layer_index;
+    std::vector<int> layerIndices;
     float viewSphereDiameter;
 
     // Reference frame
@@ -100,7 +104,7 @@ public:
     void addMeshesToScene(Scene& localScene);
     void setViewSphereDiameter(float viewSphereDiameter);
 
-    RenderStats generateFrame(bool createResidualFrame = false, bool showNormals = false, bool showDepth = false);
+    RenderStats generateFrame(bool showNormals = false, bool showDepth = false);
     void sendFrame(pose_id_t poseID, bool createResidualFrame);
 
     void setDrawState(QuadMesh::DrawState drawState);

@@ -1,5 +1,6 @@
 #include <future>
 #include <Quads/FrameGenerator.h>
+#include "nvtx3/nvToolsExt.h"
 
 using namespace quasar;
 
@@ -24,42 +25,41 @@ void FrameGenerator::createReferenceFrame(
     Create proxies from the current FrameRenderTarget (which includes depth and normals)
     ============================
     */
+    nvtxRangePushA("Create Reference Frame - Create Proxies");
     double startTime = timeutils::getTimeMicros();
     quadsGenerator->createProxiesFromRT(referenceFrameRT, remoteCamera);
     stats.generateQuadsTimeMs = quadsGenerator->stats.generateQuadsTimeMs;
     stats.simplifyQuadsTimeMs = quadsGenerator->stats.simplifyQuadsTimeMs;
     stats.gatherQuadsTimeMs = quadsGenerator->stats.gatherQuadsTimeMs;
     stats.createQuadsTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    nvtxRangePop();
 
     // Transfer updated proxies to CPU for compression
-    auto sizes = quadSet.writeToMemory(uncompressedQuads, uncompressedOffsets, params.applyDeltaEncoding);
-    referenceFrame.numQuads = sizes.numQuads;
-    referenceFrame.numDepthOffsets = sizes.numDepthOffsets;
+    // auto sizes = quadSet.writeToMemory(uncompressedQuads, uncompressedOffsets, params.applyDeltaEncoding);
+    // referenceFrame.numQuads = sizes.numQuads;
+    // referenceFrame.numDepthOffsets = sizes.numDepthOffsets;
     stats.transferTimeMs = quadSet.stats.transferTimeMs;
 
-    // Compress proxies (nonblocking)
-    auto offsetsFuture = threadPool->submit_task([&]() {
-        return referenceFrame.compressAndStoreDepthOffsets(uncompressedOffsets);
-    });
-    auto quadsFuture = threadPool->submit_task([&]() {
-        return referenceFrame.compressAndStoreQuads(uncompressedQuads);
-    });
-
     // Using GPU buffers, reconstruct mesh using proxies
+    // So what we want is that we first render & change it into proxy and mesh, so that we can 
+    // later transfer the mesh into a local renderer for quick rendering
+    // The key concept is that can we do this locally on a standalone client without streaming?
+    nvtxRangePushA("Create Reference Frame - Create Mesh from Proxies");
     startTime = timeutils::getTimeMicros();
     referenceMesh.appendQuads(quadSet, gBufferSize);
     referenceMesh.createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
     stats.appendQuadsTimeMs = referenceMesh.stats.appendQuadsTimeMs;
     stats.createVertIndTimeMs = referenceMesh.stats.createMeshTimeMs;
     stats.createMeshTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    nvtxRangePop();
 
     /*
     ============================
     Wait for asynchronous compression to finish and set resulting data sizes
     ============================
     */
-    referenceFrame.quads.resize(quadsFuture.get());
-    referenceFrame.depthOffsets.resize(offsetsFuture.get());
+    // referenceFrame.quads.resize(quadsFuture.get());
+    // referenceFrame.depthOffsets.resize(offsetsFuture.get());
     stats.compressTimeMs = referenceFrame.getCompressTime();
 }
 

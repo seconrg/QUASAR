@@ -27,6 +27,9 @@
 
 #include <PoseSendRecvSimulator.h>
 
+// Client's QUASAR simulator, we kick out any kind of compression/streaming so that we only need to do local rendering
+// so we doesn't need gstreamer right now.
+
 using namespace quasar;
 
 int main(int argc, char** argv) {
@@ -87,7 +90,7 @@ int main(int argc, char** argv) {
     Path outputPath = Path(args::get(outputPathIn)); outputPath.mkdirRecursive();
 
     uint maxHidLayers = args::get(maxHiddenLayersIn);
-    uint maxLayers = maxHidLayers + 2;
+    // uint maxLayers = maxHidLayers + 2;
 
     auto window = std::make_shared<GLFWWindow>(config);
     auto guiManager = std::make_shared<ImGuiManager>(window);
@@ -95,11 +98,16 @@ int main(int argc, char** argv) {
     config.window = window;
     config.guiManager = guiManager;
 
+    uint wide_fov_layer_index = 4;
+    std::vector<int> layerIndices = {0,1,2,3,4};
+    uint maxLayers = layerIndices.size(); // +1 for wide fov
+    bool contain_wide_fov = (layerIndices.back() == wide_fov_layer_index);
+
     OpenGLApp app(config);
     ForwardRenderer renderer(config);
     config.width = remoteWindowSize.x;
     config.height = remoteWindowSize.y;
-    DepthPeelingRenderer remoteRendererDP(config, maxLayers - 1, true); // DP layers doesn't include wide fov
+    DepthPeelingRenderer remoteRendererDP(config, contain_wide_fov ? maxLayers - 1 : maxLayers, layerIndices, true); // DP layers doesn't include wide fov
     DeferredRenderer remoteRenderer(config);
 
     double totalProxyGenerationTimeMs = 0.0;
@@ -129,6 +137,8 @@ int main(int argc, char** argv) {
         remoteRendererDP, remoteRenderer, remoteScene, remoteCamera,
         {
             .maxLayers = static_cast<uint>(maxLayers),
+            .wide_fov_layer_index = wide_fov_layer_index,
+            .layerIndices = layerIndices,
             .viewSphereDiameter = viewSphereDiameter,
             .wideFOV = remoteFOVWide,
         });
@@ -518,9 +528,10 @@ int main(int argc, char** argv) {
         totalDT += dt;
 
         if (rerenderIntervalMs > 0.0 && (now - lastRenderTime) >= timeutils::millisToSeconds(rerenderIntervalMs - 1.0)) {
-            sendReferenceFrame = (frameCounter++) % refFrameInterval == 0; // insert Reference Frame every refFrameInterval frames
-            sendResidualFrame = !sendReferenceFrame;
-        }
+            frameCounter++;
+            sendResidualFrame = false;
+            sendReferenceFrame = true;
+        }        
         if (sendReferenceFrame || sendResidualFrame) {
             // Update all animations
             if (runAnimations) {
@@ -541,10 +552,13 @@ int main(int argc, char** argv) {
             }
             spdlog::info("Generating new frame at time {:.3f}s (sendReferenceFrame={}, sendResidualFrame={})",
                          now, sendReferenceFrame, sendResidualFrame);
-            quasar.generateFrame(sendResidualFrame, showNormals, showDepth);
-            quasar.sendFrame(-1, sendResidualFrame);
+            
+            double startTime = timeutils::getTimeMillis();
+            quasar.generateFrame(showNormals, showDepth);
+            double endTime = timeutils::getTimeMillis();
+            spdlog::info("Total render time: {:.3f}ms", (endTime - startTime));
 
-            quasar.writeToFiles(outputPath, frameCounter); // for debugging
+            // quasar.writeToFiles(outputPath, frameCounter); // for debugging
 
             std::string frameType = sendReferenceFrame ? "Reference Frame" : "Residual Frame";
             spdlog::info("======================================================");
@@ -632,14 +646,14 @@ int main(int argc, char** argv) {
         if (!updateClient) {
 
             // print out the stats
-            spdlog::info("======================================================");
-            spdlog::info("Total Stats over {} frames:", frameCounter);
-            spdlog::info("Total Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS);
-            spdlog::info("Total Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs);
-            spdlog::info("Total Compression Time: {:.3f}ms", totalCompressionTimeMs);
-            spdlog::info("Average Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS / (frameCounter > 0 ? frameCounter : 1));
-            spdlog::info("Average Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs / (frameCounter > 0 ? frameCounter : 1));
-            spdlog::info("Average Compression Time: {:.3f}ms", totalCompressionTimeMs / (frameCounter > 0 ? frameCounter : 1));
+            // spdlog::info("======================================================");
+            // spdlog::info("Total Stats over {} frames:", frameCounter);
+            // spdlog::info("Total Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS);
+            // spdlog::info("Total Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs);
+            // spdlog::info("Total Compression Time: {:.3f}ms", totalCompressionTimeMs);
+            // spdlog::info("Average Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS / (frameCounter > 0 ? frameCounter : 1));
+            // spdlog::info("Average Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs / (frameCounter > 0 ? frameCounter : 1));
+            // spdlog::info("Average Compression Time: {:.3f}ms", totalCompressionTimeMs / (frameCounter > 0 ? frameCounter : 1));
             return;
         }
         if (cameraAnimator.running) {

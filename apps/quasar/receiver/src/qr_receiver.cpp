@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
     OpenGLApp app(config);
     ForwardRenderer renderer(config);
 
-    DepthPeelingRenderer remoteRendererDP(config, maxLayers - 1, true);
+    DepthPeelingRenderer remoteRendererDP(config, maxLayers - 1, {0, 1,2, 3, 4}, true);
     DeferredRenderer remoteRenderer(config);
 
     Scene scene;
