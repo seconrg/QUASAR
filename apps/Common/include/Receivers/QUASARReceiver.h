@@ -38,12 +38,17 @@ public:
         double loadTimeMs = 0.0;
         double decompressTimeMs = 0.0;
         double transferTimeMs = 0.0;
-        double createMeshTimeMs = 0.0;
+        std::vector<double> createMeshTimeMs;
+        double totalLoadTimeMs = 0.0;
+        double totalDecompressTimeMs = 0.0;
+        double receiveMeshCount = 0.0;
         QuadSet::Sizes sizes{};
     } stats;
 
     std::string proxiesURL;
     std::string videoURL;
+
+    std::vector<int> useLayer;
 
     uint maxLayers;
     float viewSphereDiameter;

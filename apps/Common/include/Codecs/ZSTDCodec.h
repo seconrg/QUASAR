@@ -50,6 +50,11 @@ public:
     size_t decompress(const void* compressedData, std::vector<char>& decompressedData, size_t numBytesCompressed) override {
         double startTime = timeutils::getTimeMicros();
 
+        if (compressedData == nullptr || numBytesCompressed == 0) {
+            spdlog::info("ZSTDCodec::decompress called with empty data");
+            return 0;
+        }
+
         auto res = ZSTD_decompressDCtx(decompressionCtx,
             decompressedData.data(), decompressedData.size(),
             compressedData, numBytesCompressed);

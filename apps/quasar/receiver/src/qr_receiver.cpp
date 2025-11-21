@@ -48,6 +48,8 @@ int main(int argc, char** argv) {
     args::ValueFlag<std::string> videoURLIn(parser, "video", "URL to recv video", {'c', "video-url"}, "0.0.0.0:12345");
     args::ValueFlag<std::string> proxiesURLIn(parser, "proxies", "URL to recv quad proxy metadata", {'e', "proxies-url"}, "127.0.0.1:65432");
     args::ValueFlag<std::string> poseURLIn(parser, "pose", "URL to recv camera pose", {'p', "pose-url"}, "127.0.0.1:54321");
+    args::ValueFlag<std::string> cameraPathFileIn(parser, "camera-path", "Path to camera animation file", {'C', "camera-path"});
+    
     try {
         parser.ParseCLI(argc, argv);
     } catch (args::Help) {
@@ -71,6 +73,7 @@ int main(int argc, char** argv) {
     config.enableVSync = !args::get(novsync);
 
     Path dataPath = Path(args::get(dataPathIn));
+    Path cameraPathFile = args::get(cameraPathFileIn);
     Path outputPath = Path(args::get(outputPathIn)); outputPath.mkdirRecursive();
     std::string videoURL = !loadFromDisk ? args::get(videoURLIn) : "";
     std::string proxiesURL = !loadFromDisk ? args::get(proxiesURLIn) : "";
@@ -105,6 +108,11 @@ int main(int argc, char** argv) {
         .minFilter = GL_LINEAR,
         .magFilter = GL_LINEAR,
     }, renderer, tonemapper, dataPath, config.targetFramerate);
+
+    CameraAnimator cameraAnimator(cameraPathFile, -1);
+    if (cameraPathFileIn) {
+        cameraAnimator.copyPoseToCamera(camera);
+    }
 
     QuadSet quadSet(windowSize);
     QUASARReceiver quasarReceiver(quadSet, maxLayers, videoURL, proxiesURL);
@@ -155,6 +163,10 @@ int main(int argc, char** argv) {
     bool showWireframe = false;
 
     RenderStats renderStats;
+
+    std::vector<double> meshTimes(maxLayers, 0.0);
+    int frameCount = 0;
+
     FrameRateWindow frameRateWindow;
     FrameCaptureWindow frameCaptureWindow(recorder, glm::uvec2(430, 270), outputPath);
     TexturePreviewWindow videoPreviewWindow("Video Texture", quasarReceiver.videoAtlasTexture, glm::uvec2(860, 860));
@@ -244,7 +256,10 @@ int main(int argc, char** argv) {
                 ImGui::TextColored(ImVec4(0,0.5,0,1), "Time to load data: %.3f ms", quasarReceiver.stats.loadTimeMs);
                 ImGui::TextColored(ImVec4(0,0.5,0,1), "Time to decompress data (async): %.3f ms", quasarReceiver.stats.decompressTimeMs);
                 ImGui::TextColored(ImVec4(0,0.5,0,1), "Time to copy data to GPU: %.3f ms", quasarReceiver.stats.transferTimeMs);
-                ImGui::TextColored(ImVec4(0,0.5,0,1), "Time to create mesh: %.3f ms", quasarReceiver.stats.createMeshTimeMs);
+
+                for (size_t layer = 0; layer < quasarReceiver.stats.createMeshTimeMs.size(); layer++) {
+                    ImGui::TextColored(ImVec4(0,0.5,0,1), "Time to create mesh: %.3f ms", quasarReceiver.stats.createMeshTimeMs[layer]);
+                }
             }
 
             ImGui::Separator();
@@ -316,13 +331,24 @@ int main(int argc, char** argv) {
                 camera.processMouseMovement(xoffset, yoffset, true);
             }
         }
-        auto keys = window->getKeys();
-        camera.processKeyboard(keys, dt);
-        if (keys.ESC_PRESSED) {
-            window->close();
+
+        if (cameraAnimator.running) {
+            bool updateClient = cameraAnimator.update(!cameraPathFileIn ? dt : 1.0 / MILLISECONDS_IN_SECOND);
+            now = cameraAnimator.now;
+            dt = cameraAnimator.dt;
+            if (updateClient) {
+                spdlog::info("Camera Animator Time: {:.3f} s", now);
+                cameraAnimator.copyPoseToCamera(camera);
+            }
+        } else {
+            auto keys = window->getKeys();
+            camera.processKeyboard(keys, dt);
+            if (keys.ESC_PRESSED) {
+                window->close();
+            }
+            auto scroll = window->getScrollOffset();
+            camera.processScroll(scroll.y);
         }
-        auto scroll = window->getScrollOffset();
-        camera.processScroll(scroll.y);
 
         // Send pose to streamer
         pose_id_t currPoseID = poseStreamer.sendPose();
@@ -359,6 +385,13 @@ int main(int argc, char** argv) {
 
         // Render to screen
         tonemapper.drawToScreen(renderer);
+
+        if (cameraPathFileIn) {
+            if (!cameraAnimator.running) {
+                recorder.stop();
+                window->close();
+            }
+        }
     });
 
     // Run app loop (blocking)

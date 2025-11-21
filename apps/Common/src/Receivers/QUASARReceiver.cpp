@@ -1,4 +1,5 @@
 #include <Receivers/QUASARReceiver.h>
+#include "nvtx3/nvToolsExt.h"
 
 using namespace quasar;
 
@@ -65,6 +66,10 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::stri
     cv.notify_one();
 
     threadPool = std::make_unique<BS::thread_pool<>>(4);
+
+    stats.createMeshTimeMs.resize(maxLayers, 0.0);
+
+    useLayer = {1, 2, 3, 4};
 
     if (!proxiesURL.empty()) {
         spdlog::info("Created QUASARReceiver that recvs from URL: tcp://{}", proxiesURL);
@@ -292,9 +297,12 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
         std::memcpy(&layerSize, layerPtr, sizeof(uint32_t));
         const char* dataPtr = layerPtr + sizeof(uint32_t);
 
-        futures.emplace_back(threadPool->submit_task([&, dataPtr, layerSize]() {
-            return referenceFrames[0].loadFromMemory(dataPtr, layerSize);
-        }));
+        if (useLayer[0] == 0) {
+
+            futures.emplace_back(threadPool->submit_task([&, dataPtr, layerSize]() {
+                return referenceFrames[0].loadFromMemory(dataPtr, layerSize);
+            }));
+        }
 
         layerPtr += sizeof(uint32_t) + layerSize;
     }
@@ -302,9 +310,12 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
         std::memcpy(&layerSize, layerPtr, sizeof(uint32_t));
         const char* dataPtr = layerPtr + sizeof(uint32_t);
 
-        futures.emplace_back(threadPool->submit_task([&, dataPtr, layerSize]() {
-            return residualFrame.loadFromMemory(dataPtr, layerSize);
-        }));
+        if (useLayer[0] == 0) {
+
+            futures.emplace_back(threadPool->submit_task([&, dataPtr, layerSize]() {
+                return residualFrame.loadFromMemory(dataPtr, layerSize);
+            }));
+        }
 
         layerPtr += sizeof(uint32_t) + layerSize;
     }
@@ -313,9 +324,15 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
         std::memcpy(&layerSize, layerPtr, sizeof(uint32_t));
         const char* dataPtr = layerPtr + sizeof(uint32_t);
 
-        futures.emplace_back(threadPool->submit_task([&, layer, dataPtr, layerSize]() {
-            return referenceFrames[layer].loadFromMemory(dataPtr, layerSize);
-        }));
+        for (int i=0; i<useLayer.size(); i++) {
+            if (useLayer[i] == layer) {
+
+                futures.emplace_back(threadPool->submit_task([&, layer, dataPtr, layerSize]() {
+                    return referenceFrames[layer].loadFromMemory(dataPtr, layerSize);
+                }));
+                break;
+            }
+        }
 
         layerPtr += sizeof(uint32_t) + layerSize;
     }
@@ -323,9 +340,11 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
     for (auto& f : futures) f.get();
 
     stats.loadTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    stats.totalLoadTimeMs += stats.loadTimeMs;
 
     // Decompress (asynchronous)
     startTime = timeutils::getTimeMicros();
+
     if (header.frameType == QuadFrame::FrameType::REFERENCE) {
         frame->decompressReferenceHiddenLayersWideFOV(threadPool, referenceFrames);
     }
@@ -333,6 +352,7 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
         frame->decompressResidualHiddenLayersWideFOV(threadPool, referenceFrames, residualFrame);
     }
     stats.decompressTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    stats.totalDecompressTimeMs += stats.decompressTimeMs;
 
     // Signal that frame is ready
     {
@@ -348,85 +368,120 @@ QuadFrame::FrameType QUASARReceiver::reconstructFrame(std::shared_ptr<Frame> fra
     if (frame->frameType == QuadFrame::FrameType::NONE) {
         return QuadFrame::FrameType::NONE;
     }
+    stats.receiveMeshCount += 1.0;
 
     spdlog::debug("Reconstructing {} Frame...", frame->frameType == QuadFrame::FrameType::REFERENCE ? "Reference" : "Residual");
     frame->cameraPose.copyPoseToCamera(remoteCamera);
     frame->cameraPose.copyPoseToCamera(remoteCameraWideFOV, false);
-
+    
     const glm::vec2& gBufferSize = quadSet.getSize();
     double startTime = timeutils::getTimeMicros();
     // Reconstruct visible layer
-    if (frame->frameType == QuadFrame::FrameType::REFERENCE) {
-        // Transfer proxies to GPU for reconstruction
-        auto sizes = quadSet.loadFromMemory(bufferPool.uncompressedQuads[0], bufferPool.uncompressedOffsets[0]);
-        referenceFrames[0].numQuads = sizes.numQuads;
-        referenceFrames[0].numDepthOffsets = sizes.numDepthOffsets;
-        stats.transferTimeMs = quadSet.stats.transferTimeMs;
+    
+    if (useLayer[0] == 0) {
+    // if (true) {
+        if (frame->frameType == QuadFrame::FrameType::REFERENCE) {
+            nvtxRangePushA("Reconstructing Reference Frame");
+            // Transfer proxies to GPU for reconstruction
+            auto sizes = quadSet.loadFromMemory(bufferPool.uncompressedQuads[0], bufferPool.uncompressedOffsets[0]);
+            referenceFrames[0].numQuads = sizes.numQuads;
+            referenceFrames[0].numDepthOffsets = sizes.numDepthOffsets;
+            stats.transferTimeMs = quadSet.stats.transferTimeMs;
 
-        // Using GPU buffers, reconstruct mesh using proxies
-        const auto& cameraToUse = getCameraToUse(0);
-        startTime = timeutils::getTimeMicros();
-        meshes[0].appendQuads(quadSet, gBufferSize);
-        meshes[0].createMeshFromProxies(quadSet, gBufferSize, cameraToUse);
-        stats.createMeshTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+            // Using GPU buffers, reconstruct mesh using proxies
+            const auto& cameraToUse = getCameraToUse(0);
+            startTime = timeutils::getTimeMicros();
+            meshes[0].appendQuads(quadSet, gBufferSize);
+            meshes[0].createMeshFromProxies(quadSet, gBufferSize, cameraToUse);
 
-        auto meshBufferSizes = meshes[0].getBufferSizes();
-        stats.totalTriangles = meshBufferSizes.numIndices / 3;
-        stats.sizes = sizes;
+            auto meshBufferSizes = meshes[0].getBufferSizes();
+            stats.createMeshTimeMs[0] += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
-        remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
-        remoteCameraPrev.setViewMatrix(remoteCamera.getViewMatrix());
+            stats.totalTriangles = meshBufferSizes.numIndices / 3;
+            stats.sizes = sizes;
+
+            remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
+            remoteCameraPrev.setViewMatrix(remoteCamera.getViewMatrix());
+            nvtxRangePop();
+        }
+        else {
+            // Transfer updated proxies to GPU for reconstruction
+            nvtxRangePushA("Reconstructing Residual Frame");
+            auto sizesUpdated = quadSet.loadFromMemory(bufferPool.uncompressedQuads[0], bufferPool.uncompressedOffsets[0]);
+            residualFrame.numQuadsUpdated = sizesUpdated.numQuads;
+            residualFrame.numDepthOffsetsUpdated = sizesUpdated.numDepthOffsets;
+            stats.transferTimeMs = quadSet.stats.transferTimeMs;
+
+            // Using GPU buffers, update reference frame mesh using proxies
+            startTime = timeutils::getTimeMicros();
+            meshes[0].appendQuads(quadSet, gBufferSize, false /* not a reference frame */);
+            meshes[0].createMeshFromProxies(quadSet, gBufferSize, remoteCameraPrev);
+
+            auto refMeshBufferSizes = meshes[0].getBufferSizes();
+            stats.totalTriangles = refMeshBufferSizes.numIndices / 3;
+
+            stats.createMeshTimeMs[0] += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+
+            // Transfer revealed proxies to GPU for reconstruction
+            auto sizesRevealed = quadSet.loadFromMemory(bufferPool.uncompressedQuadsRevealed, bufferPool.uncompressedOffsetsRevealed);
+            residualFrame.numQuadsRevealed = sizesRevealed.numQuads;
+            residualFrame.numDepthOffsetsRevealed = sizesRevealed.numDepthOffsets;
+            stats.transferTimeMs += quadSet.stats.transferTimeMs;
+
+            // Using GPU buffers, reconstruct revealed mesh using proxies
+            startTime = timeutils::getTimeMicros();
+            residualFrameMesh.appendQuads(quadSet, gBufferSize);
+            residualFrameMesh.createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
+
+            auto resMeshBufferSizes = residualFrameMesh.getBufferSizes();
+
+            stats.createMeshTimeMs[0] += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+            stats.totalTriangles += resMeshBufferSizes.numIndices / 3;
+            stats.sizes = sizesUpdated + sizesRevealed;
+            nvtxRangePop();
+        }
     }
-    else {
-        // Transfer updated proxies to GPU for reconstruction
-        auto sizesUpdated = quadSet.loadFromMemory(bufferPool.uncompressedQuads[0], bufferPool.uncompressedOffsets[0]);
-        residualFrame.numQuadsUpdated = sizesUpdated.numQuads;
-        residualFrame.numDepthOffsetsUpdated = sizesUpdated.numDepthOffsets;
-        stats.transferTimeMs = quadSet.stats.transferTimeMs;
-
-        // Using GPU buffers, update reference frame mesh using proxies
-        startTime = timeutils::getTimeMicros();
-        meshes[0].appendQuads(quadSet, gBufferSize, false /* not a reference frame */);
-        meshes[0].createMeshFromProxies(quadSet, gBufferSize, remoteCameraPrev);
-        stats.createMeshTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
-
-        auto refMeshBufferSizes = meshes[0].getBufferSizes();
-        stats.totalTriangles = refMeshBufferSizes.numIndices / 3;
-
-        // Transfer revealed proxies to GPU for reconstruction
-        auto sizesRevealed = quadSet.loadFromMemory(bufferPool.uncompressedQuadsRevealed, bufferPool.uncompressedOffsetsRevealed);
-        residualFrame.numQuadsRevealed = sizesRevealed.numQuads;
-        residualFrame.numDepthOffsetsRevealed = sizesRevealed.numDepthOffsets;
-        stats.transferTimeMs += quadSet.stats.transferTimeMs;
-
-        // Using GPU buffers, reconstruct revealed mesh using proxies
-        startTime = timeutils::getTimeMicros();
-        residualFrameMesh.appendQuads(quadSet, gBufferSize);
-        residualFrameMesh.createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
-        stats.createMeshTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
-
-        auto resMeshBufferSizes = residualFrameMesh.getBufferSizes();
-        stats.totalTriangles += resMeshBufferSizes.numIndices / 3;
-        stats.sizes = sizesUpdated + sizesRevealed;
-    }
-
+    
     // Reconstruct hidden layers and wide FOV
-    for (int layer = 1; layer < maxLayers; layer++) {
+    for (int lid = 0; lid < useLayer.size(); lid++) {
+
+        int layer = useLayer[lid];
+        if (layer == 0) continue;
+
+        
         auto sizes = quadSet.loadFromMemory(bufferPool.uncompressedQuads[layer], bufferPool.uncompressedOffsets[layer]);
         referenceFrames[layer].numQuads = sizes.numQuads;
         referenceFrames[layer].numDepthOffsets = sizes.numDepthOffsets;
         stats.transferTimeMs += quadSet.stats.transferTimeMs;
 
+        nvtxRangePushA(("Reconstructing Layer " + std::to_string(layer)).c_str());
+
         const auto& cameraToUse = getCameraToUse(layer);
         startTime = timeutils::getTimeMicros();
         meshes[layer].appendQuads(quadSet, gBufferSize);
         meshes[layer].createMeshFromProxies(quadSet, gBufferSize, cameraToUse);
-        stats.createMeshTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
         auto meshBufferSizes = meshes[layer].getBufferSizes();
         stats.totalTriangles += meshBufferSizes.numIndices / 3;
         stats.sizes += sizes;
+        nvtxRangePop();
+        double createMeshTime = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+        stats.createMeshTimeMs[layer] += createMeshTime;
+        
+        std::cout << "Create mesh time for layer " << layer << ": " << createMeshTime << " ms" << std::endl;
     }
+
+    for (int i=0; i<maxLayers; i++) {
+        std::cout << "Average time for creating mesh for layer " << i << ": "
+                  << (stats.receiveMeshCount > 0 ? stats.createMeshTimeMs[i] / stats.receiveMeshCount : 0.0)
+                  << " ms" << std::endl;
+    }
+    std::cout << "Average load time: "
+              << (stats.receiveMeshCount > 0 ? stats.totalLoadTimeMs / stats.receiveMeshCount : 0.0)
+              << " ms" << std::endl;
+    std::cout << "Average decompress time: "
+              << (stats.receiveMeshCount > 0 ? stats.totalDecompressTimeMs / stats.receiveMeshCount : 0.0) 
+              << " ms" << std::endl;
 
     return frame->frameType;
 }
