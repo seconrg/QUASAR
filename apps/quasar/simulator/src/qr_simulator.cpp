@@ -517,8 +517,6 @@ int main(int argc, char** argv) {
         }
         totalDT += dt;
 
-        spdlog::info("RerenderIntervalMs: {:.3f}ms", rerenderIntervalMs);
-
         if (rerenderIntervalMs > 0.0 && (now - lastRenderTime) >= timeutils::millisToSeconds(rerenderIntervalMs - 1.0)) {
             sendReferenceFrame = (frameCounter++) % refFrameInterval == 0; // insert Reference Frame every refFrameInterval frames
             sendResidualFrame = !sendReferenceFrame;
@@ -631,21 +629,8 @@ int main(int argc, char** argv) {
         holeFiller.enableTonemapping(!showNormals);
         holeFiller.setDepthThreshold(quadsGenerator->params.depthThreshold);
         holeFiller.drawToScreen(renderer);
-        if (!updateClient) {
-
-            // print out the stats
-            spdlog::info("======================================================");
-            spdlog::info("Total Stats over {} frames:", frameCounter);
-            spdlog::info("Total Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS);
-            spdlog::info("Total Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs);
-            spdlog::info("Total Compression Time: {:.3f}ms", totalCompressionTimeMs);
-            spdlog::info("Average Frame Generation Time: {:.3f}ms", totalFrameGenerationTimeMS / (frameCounter > 0 ? frameCounter : 1));
-            spdlog::info("Average Proxy Generation Time: {:.3f}ms", totalProxyGenerationTimeMs / (frameCounter > 0 ? frameCounter : 1));
-            spdlog::info("Average Compression Time: {:.3f}ms", totalCompressionTimeMs / (frameCounter > 0 ? frameCounter : 1));
-            return;
-        }
         if (cameraAnimator.running) {
-            spdlog::info("Client Render Time: {:.3f}ms", timeutils::secondsToMillis(window->getTime() - startTime));
+            spdlog::debug("Client Render Time: {:.3f}ms", timeutils::secondsToMillis(window->getTime() - startTime));
         }
 
         poseSendRecvSimulator.accumulateError(camera, remoteCamera);

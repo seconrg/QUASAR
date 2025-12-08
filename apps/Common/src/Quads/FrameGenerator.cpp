@@ -1,5 +1,6 @@
 #include <future>
 #include <Quads/FrameGenerator.h>
+#include "nvtx3/nvToolsExt.h"
 
 using namespace quasar;
 
@@ -25,34 +26,38 @@ void FrameGenerator::createReferenceFrame(
     ============================
     */
     double startTime = timeutils::getTimeMicros();
+    nvtxRangePushA("Generate Quads");
     quadsGenerator->createProxiesFromRT(referenceFrameRT, remoteCamera);
+    nvtxRangePop();
     stats.generateQuadsTimeMs = quadsGenerator->stats.generateQuadsTimeMs;
     stats.simplifyQuadsTimeMs = quadsGenerator->stats.simplifyQuadsTimeMs;
     stats.gatherQuadsTimeMs = quadsGenerator->stats.gatherQuadsTimeMs;
     stats.createQuadsTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
     // Transfer updated proxies to CPU for compression
-    auto sizes = quadSet.writeToMemory(uncompressedQuads, uncompressedOffsets, params.applyDeltaEncoding);
-    referenceFrame.numQuads = sizes.numQuads;
-    referenceFrame.numDepthOffsets = sizes.numDepthOffsets;
-    stats.transferTimeMs = quadSet.stats.transferTimeMs;
+    // auto sizes = quadSet.writeToMemory(uncompressedQuads, uncompressedOffsets, params.applyDeltaEncoding);
+    // referenceFrame.numQuads = sizes.numQuads;
+    // referenceFrame.numDepthOffsets = sizes.numDepthOffsets;
+    // stats.transferTimeMs = quadSet.stats.transferTimeMs;
 
     // Compress proxies (nonblocking)
-    auto offsetsFuture = threadPool->submit_task([&]() {
-        return referenceFrame.compressAndStoreDepthOffsets(uncompressedOffsets);
-    });
-    auto quadsFuture = threadPool->submit_task([&]() {
-        return referenceFrame.compressAndStoreQuads(uncompressedQuads);
-    });
+    // auto offsetsFuture = threadPool->submit_task([&]() {
+    //     return referenceFrame.compressAndStoreDepthOffsets(uncompressedOffsets);
+    // });
+    // auto quadsFuture = threadPool->submit_task([&]() {
+    //     return referenceFrame.compressAndStoreQuads(uncompressedQuads);
+    // });
 
     // Using GPU buffers, reconstruct mesh using proxies
     if (generateMesh) {
+        nvtxRangePushA("Mesh from Proxies");
         startTime = timeutils::getTimeMicros();
         referenceMesh.appendQuads(quadSet, gBufferSize);
         referenceMesh.createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
         stats.appendQuadsTimeMs = referenceMesh.stats.appendQuadsTimeMs;
         stats.createVertIndTimeMs = referenceMesh.stats.createMeshTimeMs;
         stats.createMeshTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+        nvtxRangePop();
     }
 
     /*
@@ -60,9 +65,9 @@ void FrameGenerator::createReferenceFrame(
     Wait for asynchronous compression to finish and set resulting data sizes
     ============================
     */
-    referenceFrame.quads.resize(quadsFuture.get());
-    referenceFrame.depthOffsets.resize(offsetsFuture.get());
-    stats.compressTimeMs = referenceFrame.getCompressTime();
+    // referenceFrame.quads.resize(quadsFuture.get());
+    // referenceFrame.depthOffsets.resize(offsetsFuture.get());
+    // stats.compressTimeMs = referenceFrame.getCompressTime();
 }
 
 void FrameGenerator::updateResidualRenderTargets(
@@ -78,6 +83,8 @@ void FrameGenerator::updateResidualRenderTargets(
     Generate frame from old camera pose using previous frame as a mask to capture scene changes
     ============================
     */
+
+    nvtxRangePushA("Update Residual Render Targets");
     double startTime = timeutils::getTimeMicros();
 
     // Fill depth buffer with previous reconstructed mesh
@@ -94,6 +101,8 @@ void FrameGenerator::updateResidualRenderTargets(
     remoteRenderer.pipeline.depthState.depthFunc = GL_LESS;
     remoteRenderer.pipeline.writeMaskState.enableColorWrites();
     remoteRenderer.drawObjects(remoteScene, remoteCameraPrev, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    nvtxRangePop();
+    nvtxRangePush("Blit and render frame");
 
     remoteRenderer.pipeline.stencilState.restoreStencilState();
     remoteRenderer.copyToFrameRT(residualFrameMaskRT); // Save result into a temporary render target
@@ -115,6 +124,8 @@ void FrameGenerator::updateResidualRenderTargets(
 
     remoteRenderer.pipeline.stencilState.restoreStencilState();
     remoteRenderer.copyToFrameRT(residualFrameRT);
+
+    nvtxRangePop();
 
     stats.updateRTsTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 }

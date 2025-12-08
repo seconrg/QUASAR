@@ -307,7 +307,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     RenderStats renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
     stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
-    for (int layer = 0; layer < 2; layer++) {
+    for (int layer = 0; layer < maxLayers; layer++) {
 
         std::string layerStr = (layer == 0) ? "Reference Frame" : "Hidden Layer " + std::to_string(layer - 1);
         nvtxRangePushA(layerStr.c_str());
@@ -335,6 +335,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         }
         // Wide fov camera
         else {
+            nvtxRangePush("Wide FOV Render with Stencil Masking");
             // Draw old center mesh at new remoteCamera layer, filling stencil buffer with 1
             remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
             remoteRenderer.pipeline.writeMaskState.disableColorWrites();
@@ -350,6 +351,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
 
             remoteRenderer.pipeline.stencilState.restoreStencilState();
             remoteRenderer.copyToFrameRT(renderTargetToUse);
+            nvtxRangePop();
         }
         stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
