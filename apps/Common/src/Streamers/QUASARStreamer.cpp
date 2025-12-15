@@ -255,11 +255,11 @@ void QUASARStreamer::setDrawState(QuadMesh::DrawState drawState) {
 
 void QUASARStreamer::addMeshesToScene(Scene& localScene) {
     // Add in reverse order to have correct layering
-    for (int layer = nodesHidLayer.size() - 1; layer >= 0; layer--) {
-        localScene.addChildNode(&nodesHidLayer[layer]);
-        localScene.addChildNode(&wireframesHidLayer[layer]);
-        localScene.addChildNode(&depthNodesHidLayer[layer]);
-    }
+    // for (int layer = nodesHidLayer.size() - 1; layer >= 0; layer--) {
+    //     localScene.addChildNode(&nodesHidLayer[layer]);
+    //     localScene.addChildNode(&wireframesHidLayer[layer]);
+    //     localScene.addChildNode(&depthNodesHidLayer[layer]);
+    // }
 
     for (int i = 0; i < meshScenes.size(); i++) {
         localScene.addChildNode(&referenceFrameNodesLocal[i]);

@@ -8,6 +8,10 @@
 #include <Renderers/DepthPeelingRenderer.h> // We use depth peeling here to be consistent with other baselines
 #include <PostProcessing/Tonemapper.h>
 
+#include <Shaders/ComputeShader.h>
+#include <DepthMesh.h>
+#include <nvtx3/nvToolsExt.h>
+
 #include <UI/CameraHeader.h>
 #include <UI/FrameRateWindow.h>
 #include <UI/FrameCaptureWindow.h>
@@ -17,7 +21,7 @@
 #include <Path.h>
 #include <Recorder.h>
 #include <CameraAnimator.h>
-#include <shaders_common.h>
+// #include <shaders_common.h>
 
 #include <PoseSendRecvSimulator.h>
 
@@ -72,6 +76,8 @@ int main(int argc, char** argv) {
     auto window = std::make_shared<GLFWWindow>(config);
     auto guiManager = std::make_shared<ImGuiManager>(window);
 
+    int counter = 0;
+
     config.window = window;
     config.guiManager = guiManager;
 
@@ -110,6 +116,14 @@ int main(int argc, char** argv) {
         .vertexCodeSize = SHADER_BUILTIN_POSTPROCESS_VERT_len,
         .fragmentCodeData = SHADER_COMMON_ATW_FRAG,
         .fragmentCodeSize = SHADER_COMMON_ATW_FRAG_len,
+    });
+
+    ComputeShader aswShader({
+        .computeCodeData = SHADER_COMMON_ASW_COMP,
+        .computeCodeSize = SHADER_COMMON_ASW_COMP_len,
+        .defines = {
+            "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
+        }
     });
 
     Recorder recorder({
@@ -354,22 +368,49 @@ int main(int argc, char** argv) {
 
         poseSendRecvSimulator.update(now);
 
-        atwShader.bind();
+        // atwShader.bind();
+        // {
+        //     atwShader.setBool("atwEnabled", atwEnabled);
+        // }
+        // {
+        //     atwShader.setMat4("projectionInverse", camera.getProjectionMatrixInverse());
+        //     atwShader.setMat4("viewInverse", camera.getViewMatrixInverse());
+        // }
+        // {
+        //     atwShader.setMat4("remoteProjection", remoteCamera.getProjectionMatrix());
+        //     atwShader.setMat4("remoteView", remoteCamera.getViewMatrix());
+        // }
+        // {
+        //     atwShader.setTexture("videoTexture", renderTarget.colorTexture, 5);
+        //     atwShader.setTexture("depthTexture", renderTarget.depthStencilTexture, 6);
+        // }
+        // renderStats = remoteRenderer.drawToRenderTarget(atwShader, renderer.frameRT);
+
+        // write colorTexture Output for debugging   
+        // clear the output texture
+        // renderer.frameRT.clear(GL_COLOR_BUFFER_BIT);
+
+        nvtxRangePushA("ASW Compute Shader");
+
+        aswShader.bind();
         {
-            atwShader.setBool("atwEnabled", atwEnabled);
+            aswShader.setMat4("remoteProjectionInverse", remoteCamera.getProjectionMatrixInverse());
+            aswShader.setMat4("remoteViewInverse", remoteCamera.getViewMatrixInverse());
+            aswShader.setMat4("projection", camera.getProjectionMatrix());
+            aswShader.setMat4("view", camera.getViewMatrix());
         }
         {
-            atwShader.setMat4("projectionInverse", camera.getProjectionMatrixInverse());
-            atwShader.setMat4("viewInverse", camera.getViewMatrixInverse());
+            aswShader.setImageTexture(0, renderer.frameRT.colorTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+            aswShader.setImageTexture(1, renderTarget.colorTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+            aswShader.setImageTexture(2, renderTarget.depthStencilTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
         }
-        {
-            atwShader.setMat4("remoteProjection", remoteCamera.getProjectionMatrix());
-            atwShader.setMat4("remoteView", remoteCamera.getViewMatrix());
-        }
-        {
-            atwShader.setTexture("videoTexture", renderTarget.colorTexture, 5);
-        }
-        renderStats = remoteRenderer.drawToRenderTarget(atwShader, renderer.frameRT);
+
+        aswShader.dispatch((renderTarget.colorTexture.width + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
+                           (renderTarget.colorTexture.height + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
+
+        aswShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+        nvtxRangePop();
 
         double startTime = window->getTime();
         tonemapper.drawToScreen(renderer);

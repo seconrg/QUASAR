@@ -114,7 +114,8 @@ int main(int argc, char** argv) {
 
     // "Local" scene
     Scene localScene;
-    localScene.skybox = remoteScene.skybox;
+    // localScene.skybox = remoteScene.skybox;
+    localScene.skybox = nullptr;
     PerspectiveCamera camera(windowSize);
     camera.setViewMatrix(remoteCamera.getViewMatrix());
 
@@ -505,10 +506,25 @@ int main(int argc, char** argv) {
         }
         totalDT += dt;
 
+        // // Render generated meshes
+        quasar.setDrawState(QuadMesh::DrawState::OPAQUE); // draw opaque quads first
+        renderStats = renderer.drawObjects(localScene, camera);
+        quasar.setDrawState(QuadMesh::DrawState::TRANSPARENT); // then draw transparent quads
+        renderStats += renderer.drawObjects(localScene, camera, 0);
+
+        auto quadsGenerator = quasar.getQuadsGenerator();
+        holeFiller.enableTonemapping(!showNormals);
+        holeFiller.setDepthThreshold(quadsGenerator->params.depthThreshold);
+        holeFiller.drawToScreen(renderer);
+        
+
         if (rerenderIntervalMs > 0.0 && (now - lastRenderTime) >= timeutils::millisToSeconds(rerenderIntervalMs - 1.0)) {
             sendReferenceFrame = (frameCounter++) % refFrameInterval == 0; // insert Reference Frame every refFrameInterval frames
             sendResidualFrame = !sendReferenceFrame;
         }
+        //  // write back onto disk
+        // recorder.captureFrame(camera);
+        // recorder.saveFrames(0);
         if (sendReferenceFrame || sendResidualFrame) {
             // Update all animations
             if (runAnimations) {
@@ -591,16 +607,16 @@ int main(int argc, char** argv) {
         double startTime = window->getTime();
 
         // Render generated meshes
-        quasar.setDrawState(QuadMesh::DrawState::OPAQUE); // draw opaque quads first
-        renderStats = renderer.drawObjects(localScene, camera);
-        quasar.setDrawState(QuadMesh::DrawState::TRANSPARENT); // then draw transparent quads
-        renderStats += renderer.drawObjects(localScene, camera, 0);
+        // quasar.setDrawState(QuadMesh::DrawState::OPAQUE); // draw opaque quads first
+        // renderStats = renderer.drawObjects(localScene, camera);
+        // quasar.setDrawState(QuadMesh::DrawState::TRANSPARENT); // then draw transparent quads
+        // renderStats += renderer.drawObjects(localScene, camera, 0);
 
         // Render to screen
-        auto quadsGenerator = quasar.getQuadsGenerator();
-        holeFiller.enableTonemapping(!showNormals);
-        holeFiller.setDepthThreshold(quadsGenerator->params.depthThreshold);
-        holeFiller.drawToScreen(renderer);
+        // auto quadsGenerator = quasar.getQuadsGenerator();
+        // holeFiller.enableTonemapping(!showNormals);
+        // holeFiller.setDepthThreshold(quadsGenerator->params.depthThreshold);
+        // holeFiller.drawToScreen(renderer);
         if (!updateClient) {
             return;
         }

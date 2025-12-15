@@ -1,0 +1,50 @@
+#include "constants.glsl"
+#include "camera_utils.glsl"
+
+layout(local_size_x = THREADS_PER_LOCALGROUP, local_size_y = THREADS_PER_LOCALGROUP, local_size_z = 1) in;
+
+layout(binding = 0, rgba16f) uniform image2D outputImage;
+layout(binding = 1, rgba16f) uniform image2D videoTexture;
+layout(binding = 2, r32f) uniform image2D depthTexture;
+
+//
+uniform mat4 remoteProjectionInverse;
+uniform mat4 remoteViewInverse;
+uniform mat4 projection;
+uniform mat4 view;
+
+void main() {
+    // get the rendered image's screen position
+    ivec2 originalPose = ivec2(gl_GlobalInvocationID.xy);
+    vec2 texSize = vec2(imageSize(outputImage));
+    
+    if (originalPose.x >= int(texSize.x) || originalPose.y >= int(texSize.y)) {
+        return; // out of bounds
+    }
+
+    // Convert to normalized coordinates
+    vec2 uv = vec2(originalPose) / texSize;
+
+    vec3 originalColor = imageLoad(videoTexture, originalPose).rgb;
+    float pixelDepth = imageLoad(depthTexture, originalPose).r;
+    pixelDepth = clamp(pixelDepth, 0.0, MAX_DEPTH);
+
+    // Project to world space
+    vec2 ndc = 2.0 * uv - 1.0;
+    vec3 viewCoord = ndcToView(remoteProjectionInverse, ndc, pixelDepth);
+    vec3 worldCoord = viewToWorld(mat4(mat3(remoteViewInverse)), viewCoord);
+
+    // Project to the remote screen space
+    // vec3 novelViewCoord = worldToView(view, worldCoord);
+    // vec2 novelNDC = viewToNDC(projection, novelViewCoord);
+    vec2 novelUV = worldToScreen(mat4(mat3(view)), projection, worldCoord);
+
+    ivec2 novelPose = ivec2(novelUV * texSize);
+
+    // Debug: visualize the reprojection
+    if (novelPose.x >= 0 && novelPose.x < int(texSize.x) && 
+        novelPose.y >= 0 && novelPose.y < int(texSize.y)) {
+
+        imageStore(outputImage, novelPose, vec4(originalColor, 1.0));
+    }
+}

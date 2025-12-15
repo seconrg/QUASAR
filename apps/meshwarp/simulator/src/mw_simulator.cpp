@@ -105,7 +105,8 @@ int main(int argc, char** argv) {
 
     // "Local" scene
     Scene scene;
-    scene.skybox = remoteScene.skybox;
+    // scene.skybox = remoteScene.skybox;
+    scene.skybox = nullptr;
     PerspectiveCamera camera(windowSize);
     camera.setViewMatrix(remoteCamera.getViewMatrix());
 
@@ -415,6 +416,7 @@ int main(int argc, char** argv) {
         double startTime = window->getTime();
 
         // Render generated meshes
+        // This is using information from the new camera
         renderStats = renderer.drawObjects(scene, camera);
 
         tonemapper.drawToScreen(renderer);

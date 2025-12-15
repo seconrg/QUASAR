@@ -102,11 +102,14 @@ uint QuadStreamStreamer::getNumTriangles() const {
 
 void QuadStreamStreamer::addMeshesToScene(Scene& localScene) {
     // Add in reverse order to have correct layering
-    for (int view = maxViews - 1; view >= 0; view--) {
-        localScene.addChildNode(&referenceFrameNodesLocal[view]);
-        localScene.addChildNode(&referenceFrameWireframesLocal[view]);
-        localScene.addChildNode(&depthNodes[view]);
-    }
+    // for (int view = maxViews - 1; view >= 0; view--) {
+    //     localScene.addChildNode(&referenceFrameNodesLocal[view]);
+    //     localScene.addChildNode(&referenceFrameWireframesLocal[view]);
+    //     localScene.addChildNode(&depthNodes[view]);
+    // }
+    localScene.addChildNode(&referenceFrameNodesLocal[0]);
+    localScene.addChildNode(&referenceFrameWireframesLocal[0]);
+    localScene.addChildNode(&depthNodes[0]);
 }
 
 void QuadStreamStreamer::setViewBoxSize(float viewBoxSize) {

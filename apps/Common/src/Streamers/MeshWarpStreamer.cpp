@@ -1,5 +1,6 @@
 #include <Streamers/MeshWarpStreamer.h>
 #include <shaders_common.h>
+#include <nvtx3/nvToolsExt.h>
 
 #ifndef __ANDROID__
 #define THREADS_PER_LOCALGROUP 32
@@ -99,7 +100,10 @@ RenderStats MeshWarpStreamer::generateFrame() {
     // Compress depth map to BC4 format with ZSTD
     stats.compressedSize = depthStreamerRT.generateFrame();
     stats.totalCompressTimeMs = depthStreamerRT.stats.compressTimeMs;
+    
+    // compare the mesh generate time
 
+    nvtxRangePushA("Mesh Generation");
     startTime = timeutils::getTimeMicros();
     meshFromBC4Shader.bind();
     {
@@ -121,6 +125,8 @@ RenderStats MeshWarpStreamer::generateFrame() {
     meshFromBC4Shader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
                                     GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
     stats.totalGenMeshTime = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+
+    nvtxRangePop();
 
     return renderStats;
 }

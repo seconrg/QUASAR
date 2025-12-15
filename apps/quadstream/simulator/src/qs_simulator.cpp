@@ -108,7 +108,8 @@ int main(int argc, char** argv) {
 
     // "Local" scene
     Scene localScene;
-    localScene.skybox = remoteScene.skybox;
+    // localScene.skybox = remoteScene.skybox;
+    localScene.skybox = nullptr;
     PerspectiveCamera camera(windowSize);
     camera.setViewMatrix(remoteCamera.getViewMatrix());
 
