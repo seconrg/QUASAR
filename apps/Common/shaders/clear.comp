@@ -1,0 +1,17 @@
+#include "constants.glsl"
+#include "camera_utils.glsl"
+
+layout(local_size_x = THREADS_PER_LOCALGROUP, local_size_y = THREADS_PER_LOCALGROUP, local_size_z = 1) in;
+layout(binding = 0, rgba16f) uniform image2D outputImage;
+
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 texSize = vec2(imageSize(outputImage));
+    
+    if (pixelCoord.x >= int(texSize.x) || pixelCoord.y >= int(texSize.y)) {
+        return; // out of bounds
+    }
+
+    imageStore(outputImage, pixelCoord, vec4(0.0, 0.0, 0.0, 1.0));
+}

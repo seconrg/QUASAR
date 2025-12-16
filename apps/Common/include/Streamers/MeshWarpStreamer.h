@@ -66,6 +66,7 @@ private:
     ShowDepthEffect depthEffect;
 
     ComputeShader meshFromBC4Shader;
+    ComputeShader meshWarpReconstructShader;
 
     Mesh mesh;
     UnlitMaterial meshMaterial;

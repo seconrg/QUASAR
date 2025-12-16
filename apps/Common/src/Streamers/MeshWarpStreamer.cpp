@@ -62,6 +62,13 @@ MeshWarpStreamer::MeshWarpStreamer(
             "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
         }
     })
+    , meshWarpReconstructShader({
+        .computeCodeData = SHADER_COMMON_MESHWARP_RECONSTRUCT_COMP,
+        .computeCodeSize = SHADER_COMMON_MESHWARP_RECONSTRUCT_COMP_len,
+        .defines = {
+            "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
+        }
+    })
     , meshMaterial({ .baseColorTexture = &renderTarget.colorTexture })
     , mesh({
         .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1),
@@ -75,6 +82,12 @@ MeshWarpStreamer::MeshWarpStreamer(
     meshFromBC4Shader.setBool("unlinearizeDepth", true);
     meshFromBC4Shader.setVec2("depthMapSize", depthMapSize);
     meshFromBC4Shader.setUint("vertexGroupSize", params.vertexGroupSize);
+
+
+    meshWarpReconstructShader.bind();
+    meshWarpReconstructShader.setBool("unlinearizeDepth", true);
+    meshWarpReconstructShader.setVec2("depthMapSize", depthMapSize);
+    meshWarpReconstructShader.setUint("vertexGroupSize", params.vertexGroupSize);
 }
 
 RenderStats MeshWarpStreamer::generateFrame() {
@@ -103,7 +116,7 @@ RenderStats MeshWarpStreamer::generateFrame() {
     
     // compare the mesh generate time
 
-    nvtxRangePushA("Mesh Generation");
+    nvtxRangePushA("Vertex generation");
     startTime = timeutils::getTimeMicros();
     meshFromBC4Shader.bind();
     {
@@ -128,6 +141,28 @@ RenderStats MeshWarpStreamer::generateFrame() {
 
     nvtxRangePop();
 
+    nvtxRangePushA("Frame Generation");
+    meshWarpReconstructShader.bind();
+    {
+        meshWarpReconstructShader.setMat4("projection", remoteCamera.getProjectionMatrix());
+        meshWarpReconstructShader.setMat4("view", remoteCamera.getViewMatrix());
+        meshWarpReconstructShader.setFloat("near", remoteCamera.getNear());
+        meshWarpReconstructShader.setFloat("far", remoteCamera.getFar());
+    }
+    {
+        meshWarpReconstructShader.setFloat("depthThreshold", 0.1f);
+    }
+    {
+        meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, mesh.vertexBuffer);
+        meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, mesh.indexBuffer);
+    }
+
+    meshWarpReconstructShader.dispatch(((adjustedSize.x + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
+                                       ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
+    meshWarpReconstructShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
+                                    GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
+    
+    nvtxRangePop();
     return renderStats;
 }
 

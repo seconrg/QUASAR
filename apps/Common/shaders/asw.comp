@@ -13,6 +13,17 @@ uniform mat4 remoteViewInverse;
 uniform mat4 projection;
 uniform mat4 view;
 
+uniform float near;
+uniform float far;
+
+uniform bool unlinearizeDepth;
+
+float nonlinearDepthFromLinear01(float linearDepth) {
+    float z = linearDepth * (far - near) + near;
+    z = (z * (far + near) - 2.0 * near * far) / (z * (far - near));
+    return z * 0.5 + 0.5;
+}
+
 void main() {
     // get the rendered image's screen position
     ivec2 originalPose = ivec2(gl_GlobalInvocationID.xy);
@@ -28,6 +39,7 @@ void main() {
     vec3 originalColor = imageLoad(videoTexture, originalPose).rgb;
     float pixelDepth = imageLoad(depthTexture, originalPose).r;
     pixelDepth = clamp(pixelDepth, 0.0, MAX_DEPTH);
+    pixelDepth = unlinearizeDepth ? nonlinearDepthFromLinear01(pixelDepth) : pixelDepth;
 
     // Project to world space
     vec2 ndc = 2.0 * uv - 1.0;

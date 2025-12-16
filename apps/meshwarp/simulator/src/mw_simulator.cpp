@@ -138,6 +138,9 @@ int main(int argc, char** argv) {
     nodePointCloud.overrideMaterial = &pointCloudMaterial;
     scene.addChildNode(&nodePointCloud);
 
+    // remoteScene.skybox = nullptr;
+    scene.skybox = nullptr;
+
     // Post processing
     Tonemapper tonemapper;
 

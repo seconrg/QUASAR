@@ -7,6 +7,9 @@
 #include <Renderers/ForwardRenderer.h>
 #include <Renderers/DepthPeelingRenderer.h> // We use depth peeling here to be consistent with other baselines
 #include <PostProcessing/Tonemapper.h>
+#include <PostProcessing/ShowDepthEffect.h>
+
+#include <Streamers/BC4DepthStreamer.h>
 
 #include <Shaders/ComputeShader.h>
 #include <DepthMesh.h>
@@ -107,9 +110,22 @@ int main(int argc, char** argv) {
         .minFilter = GL_LINEAR,
         .magFilter = GL_LINEAR,
     });
+    
+    BC4DepthStreamer depthTarget({
+        .width = remoteRenderer.width,
+        .height = remoteRenderer.height,
+        .internalFormat = GL_R32F,
+        .format = GL_RED,
+        .type = GL_FLOAT,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+        .minFilter = GL_NEAREST,
+        .magFilter = GL_NEAREST,
+    }, "0.0.0.0:23456", 30);
 
     // Post processing
     Tonemapper tonemapper(false);
+    ShowDepthEffect depthEffect(remoteCamera);
 
     Shader atwShader({
         .vertexCodeData = SHADER_BUILTIN_POSTPROCESS_VERT,
@@ -121,6 +137,14 @@ int main(int argc, char** argv) {
     ComputeShader aswShader({
         .computeCodeData = SHADER_COMMON_ASW_COMP,
         .computeCodeSize = SHADER_COMMON_ASW_COMP_len,
+        .defines = {
+            "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
+        }
+    });
+
+    ComputeShader clearShader({
+        .computeCodeData = SHADER_COMMON_CLEAR_COMP,
+        .computeCodeSize = SHADER_COMMON_CLEAR_COMP_len,
         .defines = {
             "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
         }
@@ -357,7 +381,19 @@ int main(int argc, char** argv) {
             // Copy rendered result to video render target
             tonemapper.enableTonemapping(true);
             tonemapper.drawToRenderTarget(remoteRenderer, renderTarget);
+            depthEffect.drawToRenderTarget(remoteRenderer, depthTarget);
             tonemapper.enableTonemapping(false);
+
+
+            // char debugFilename[256];
+            // std::snprintf(debugFilename, 
+            //               sizeof(debugFilename), 
+            //               "%s/color_%04d.png", 
+            //               outputPath.c_str(), 
+            //               counter++);
+            // // depthTarget.colorTexture.writeToPNG(debugFilename);
+            // renderTarget.colorTexture.writeToPNG(debugFilename);
+
 
             spdlog::info("======================================================");
             spdlog::info("Rendering Time: {:.3f}ms", timeutils::secondsToMillis(window->getTime() - startTime));
@@ -391,8 +427,29 @@ int main(int argc, char** argv) {
         // renderer.frameRT.clear(GL_COLOR_BUFFER_BIT);
 
         nvtxRangePushA("ASW Compute Shader");
+        // manually clean up everything
+        clearShader.bind();
+        {
+            clearShader.setImageTexture(0, renderer.frameRT.colorTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+            clearShader.dispatch((renderer.frameRT.colorTexture.width + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
+                                 (renderer.frameRT.colorTexture.height + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
+            clearShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        }
 
         aswShader.bind();
+        {
+            atwShader.setBool("atwEnabled", atwEnabled);
+        }
+        {
+            aswShader.setImageTexture(0, renderer.frameRT.colorTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+            aswShader.setImageTexture(1, renderTarget.colorTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+            aswShader.setImageTexture(2, depthTarget.colorTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+        }
+        {
+            aswShader.setBool("unlinearizeDepth", true);
+            aswShader.setFloat("near", remoteCamera.getNear());
+            aswShader.setFloat("far", remoteCamera.getFar());
+        }
         {
             aswShader.setMat4("remoteProjectionInverse", remoteCamera.getProjectionMatrixInverse());
             aswShader.setMat4("remoteViewInverse", remoteCamera.getViewMatrixInverse());

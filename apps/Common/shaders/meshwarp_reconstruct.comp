@@ -1,0 +1,137 @@
+#include "constants.glsl"
+#include "camera_utils.glsl"
+
+layout(local_size_x = THREADS_PER_LOCALGROUP, local_size_y = THREADS_PER_LOCALGROUP, local_size_z = 1) in;
+
+struct Vertex {
+    vec3 position;
+    vec3 color;
+    vec2 texCoord;
+    vec3 normal;
+    vec3 tangent;
+    vec3 bitangent;
+};
+
+struct Block{
+    float max;
+    float min;
+    uint data[6];
+};
+
+layout(std430, binding = 0) buffer VertexBuffer {
+    Vertex vertices[];
+};
+
+layout(std430, binding = 1) buffer IndexBuffer {
+    uint indices[];
+};
+
+
+uniform mat4 projection;
+uniform mat4 view;
+
+uniform float near;
+uniform float far;
+
+uniform vec2 depthMapSize;
+uniform bool unlinearizeDepth;
+uniform uint vertexGroupSize;
+
+uniform float depthThreshold;
+
+#define VERTICES_IN_A_QUAD  4u
+#define INDICES_IN_A_QUAD   6u
+
+float nonlinearDepthFromLinear01(float linearDepth) {
+    float z = linearDepth * (far - near) + near;
+    z = (z * (far + near) - 2.0 * near * far) / (z * (far - near));
+    return z * 0.5 + 0.5;
+}
+
+float normalizeDepth(float depth, float near, float far) {
+    return (depth - near) / (far - near);
+}
+
+float invDepthDistance(vec3 point1, vec3 point2, float near, float far) {
+    float z1 = normalizeDepth(max(point1.z, near), near, far);
+    float z2 = normalizeDepth(max(point2.z, near), near, far);
+    return abs((1.0 / z1) - (1.0 / z2));
+}
+
+void main() {
+    uvec2 adjustedSize = uvec2(depthMapSize) / vertexGroupSize;
+    uvec2 vertexGridSize = adjustedSize + uvec2(1);
+
+    uvec2 pixelCoord = uvec2(gl_GlobalInvocationID.xy);
+
+    if (pixelCoord.x >= vertexGridSize.x - vertexGroupSize ||
+        pixelCoord.y >= vertexGridSize.y - vertexGroupSize) {
+        return;
+    }
+    // get the world coordinate of the vertex, and other vertices nearby
+    uint vertStride  = vertexGridSize.x;
+    uint shaderIndex = pixelCoord.y * vertStride + pixelCoord.x;
+
+    uint bottomLeftIdx = shaderIndex; 
+    uint bottomRightIdx = shaderIndex + 1u;
+    uint topLeftIdx = shaderIndex + vertStride;
+    uint topRightIdx = shaderIndex + vertStride + 1u;
+    // check the depth for each vertex
+
+    vec3 bottomLeftVertex = vertices[bottomLeftIdx].position;
+    vec3 bottomRightVertex = vertices[bottomRightIdx].position;
+    vec3 topLeftVertex = vertices[topLeftIdx].position;
+    vec3 topRightVertex = vertices[topRightIdx].position;
+
+    // covert to ndc space and get depth information
+    vec3 bottomLeftView = worldToView(view, bottomLeftVertex);
+    vec3 bottomRightView = worldToView(view, bottomRightVertex);
+    vec3 topLeftView = worldToView(view, topLeftVertex);
+    vec3 topRightView = worldToView(view, topRightVertex);
+
+    vec3 bottomLeftNDC = viewToNDC3(projection, bottomLeftView);
+    vec3 bottomRightNDC = viewToNDC3(projection, bottomRightView);
+    vec3 topLeftNDC = viewToNDC3(projection, topLeftView);
+    vec3 topRightNDC = viewToNDC3(projection, topRightView);
+
+    // compare the depth value and decide whether the triangle exist
+    // here we also use the inverse depth comparison showed in create_quadmap.comp
+
+    // compute the inverse depth distance
+
+    float dist1 = invDepthDistance(bottomLeftNDC, bottomRightNDC, near, far);
+    float dist2 = invDepthDistance(topLeftNDC, topRightNDC, near, far);
+    float dist3 = invDepthDistance(bottomLeftNDC, topLeftNDC, near, far);
+    float dist4 = invDepthDistance(bottomRightNDC, topRightNDC, near, far);
+    float dist5 = invDepthDistance(bottomLeftNDC, topRightNDC, near, far);
+
+    if (dist2 < depthThreshold && dist3 < depthThreshold && dist5 < depthThreshold) {
+        // triangle topLeftIdx, topRightIdx, bottomLeftIdx exists
+        indices[shaderIndex * INDICES_IN_A_QUAD + 0u] = topLeftIdx;
+        indices[shaderIndex * INDICES_IN_A_QUAD + 1u] = bottomLeftIdx;
+        indices[shaderIndex * INDICES_IN_A_QUAD + 2u] = topRightIdx;
+    } else {
+        // mark as non-exist
+        indices[shaderIndex * INDICES_IN_A_QUAD + 0u] = 0u;
+        indices[shaderIndex * INDICES_IN_A_QUAD + 1u] = 0u;
+        indices[shaderIndex * INDICES_IN_A_QUAD + 2u] = 0u;
+    }
+    // second triangle [bottomRightIdx, bottomLeftIdx, topRightIdx]
+
+    if (dist1 < depthThreshold && dist4 < depthThreshold && dist5 < depthThreshold) {
+        // triangle bottomRightIdx, bottomLeftIdx, topRightIdx exists
+        indices[shaderIndex * INDICES_IN_A_QUAD + 3u] = topRightIdx;
+        indices[shaderIndex * INDICES_IN_A_QUAD + 4u] = bottomLeftIdx;
+        indices[shaderIndex * INDICES_IN_A_QUAD + 5u] = bottomRightIdx;
+    } else {
+        // mark as non-exist
+        indices[shaderIndex * INDICES_IN_A_QUAD + 3u] = 0u;
+        indices[shaderIndex * INDICES_IN_A_QUAD + 4u] = 0u;
+        indices[shaderIndex * INDICES_IN_A_QUAD + 5u] = 0u;
+    }
+
+
+
+
+}
+
