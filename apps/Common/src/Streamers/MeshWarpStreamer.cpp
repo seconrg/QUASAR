@@ -150,7 +150,7 @@ RenderStats MeshWarpStreamer::generateFrame() {
         meshWarpReconstructShader.setFloat("far", remoteCamera.getFar());
     }
     {
-        meshWarpReconstructShader.setFloat("depthThreshold", 0.1f);
+        meshWarpReconstructShader.setFloat("depthThreshold", 0.05f);
     }
     {
         meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, mesh.vertexBuffer);

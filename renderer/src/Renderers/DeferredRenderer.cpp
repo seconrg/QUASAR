@@ -122,8 +122,9 @@ RenderStats DeferredRenderer::drawSkyBox(Scene& scene, const Camera& camera, uin
         glClearColor(scene.backgroundColor.x, scene.backgroundColor.y, scene.backgroundColor.z, scene.backgroundColor.w);
         glClear(clearMask);
     }
-
-    RenderStats stats = drawSkyBoxImpl(scene, camera, clearMask);
+    
+    RenderStats stats;
+    // RenderStats stats = drawSkyBoxImpl(scene, camera, clearMask);
     outputRT.unbind();
     return stats;
 }

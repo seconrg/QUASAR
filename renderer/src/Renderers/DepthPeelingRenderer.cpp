@@ -105,7 +105,7 @@ RenderStats DepthPeelingRenderer::drawScene(Scene& scene, const Camera& camera, 
 
         // Draw skybox (only in last layer)
         if (layer == maxLayers - 1) {
-            stats += drawSkyBox(scene, camera);
+            // stats += drawSkyBox(scene, camera);
         }
 
         copyToFrameRT(peelingLayers[layer]);

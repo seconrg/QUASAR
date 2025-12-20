@@ -58,6 +58,10 @@ float invDepthDistance(vec3 point1, vec3 point2, float near, float far) {
     return abs((1.0 / z1) - (1.0 / z2));
 }
 
+float viewSpaceDepthDistance(vec3 point1, vec3 point2) {
+    return abs(point1.z - point2.z) / max(abs(point1.z), abs(point2.z));
+}
+
 void main() {
     uvec2 adjustedSize = uvec2(depthMapSize) / vertexGroupSize;
     uvec2 vertexGridSize = adjustedSize + uvec2(1);
@@ -88,22 +92,32 @@ void main() {
     vec3 bottomRightView = worldToView(view, bottomRightVertex);
     vec3 topLeftView = worldToView(view, topLeftVertex);
     vec3 topRightView = worldToView(view, topRightVertex);
-
-    vec3 bottomLeftNDC = viewToNDC3(projection, bottomLeftView);
-    vec3 bottomRightNDC = viewToNDC3(projection, bottomRightView);
-    vec3 topLeftNDC = viewToNDC3(projection, topLeftView);
-    vec3 topRightNDC = viewToNDC3(projection, topRightView);
+ 
+    /* Code using ndc depth comparison - commented out */
+    // vec3 bottomLeftNDC = viewToNDC3(projection, bottomLeftView);
+    // vec3 bottomRightNDC = viewToNDC3(projection, bottomRightView);
+    // vec3 topLeftNDC = viewToNDC3(projection, topLeftView);
+    // vec3 topRightNDC = viewToNDC3(projection, topRightView);
 
     // compare the depth value and decide whether the triangle exist
     // here we also use the inverse depth comparison showed in create_quadmap.comp
 
     // compute the inverse depth distance
 
-    float dist1 = invDepthDistance(bottomLeftNDC, bottomRightNDC, near, far);
-    float dist2 = invDepthDistance(topLeftNDC, topRightNDC, near, far);
-    float dist3 = invDepthDistance(bottomLeftNDC, topLeftNDC, near, far);
-    float dist4 = invDepthDistance(bottomRightNDC, topRightNDC, near, far);
-    float dist5 = invDepthDistance(bottomLeftNDC, topRightNDC, near, far);
+    // float dist1 = invDepthDistance(bottomLeftNDC, bottomRightNDC, near, far);
+    // float dist2 = invDepthDistance(topLeftNDC, topRightNDC, near, far);
+    // float dist3 = invDepthDistance(bottomLeftNDC, topLeftNDC, near, far);
+    // float dist4 = invDepthDistance(bottomRightNDC, topRightNDC, near, far);
+    // float dist5 = invDepthDistance(bottomLeftNDC, topRightNDC, near, far);
+
+    /* Code using view space depth comparison */
+    float dist1 = viewSpaceDepthDistance(bottomLeftView, bottomRightView);
+    float dist2 = viewSpaceDepthDistance(topLeftView, topRightView);
+    float dist3 = viewSpaceDepthDistance(bottomLeftView, topLeftView);
+    float dist4 = viewSpaceDepthDistance(bottomRightView, topRightView);
+    float dist5 = viewSpaceDepthDistance(bottomLeftView, topRightView);
+
+
 
     if (dist2 < depthThreshold && dist3 < depthThreshold && dist5 < depthThreshold) {
         // triangle topLeftIdx, topRightIdx, bottomLeftIdx exists
@@ -129,9 +143,5 @@ void main() {
         indices[shaderIndex * INDICES_IN_A_QUAD + 4u] = 0u;
         indices[shaderIndex * INDICES_IN_A_QUAD + 5u] = 0u;
     }
-
-
-
-
 }
 
