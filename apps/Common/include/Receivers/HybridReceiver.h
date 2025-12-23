@@ -6,12 +6,10 @@
 #include <Path.h>
 
 #include <CameraPose.h>
-#include <DepthMesh.h>
 #include <Quads/QuadSet.h>
 #include <Quads/QuadFrames.h>
 #include <Quads/QuadMesh.h>
 
-#include <Receivers/HybridReceiver.h>
 #include <Networking/DataReceiverTCP.h>
 #include <Receivers/VideoTexture.h>
 #include <Codecs/AlphaCodec.h>
@@ -21,7 +19,7 @@ namespace quasar {
 class HybridReceiver : public DataReceiverTCP {
 public: 
     struct Params {
-        uint32_t numLayers;
+        uint32_t hiddenLayers;
         float viewSphereDiameter;
         float wideFOV;
     };
@@ -29,15 +27,15 @@ public:
     struct Header {
         pose_id_t poseID;
         Params params;
-
-        // Size for visible layers
-        uint32_t visibleLayerSize;
-        uint32_t visibleLayerWideFovSize;
         
         // Size for depth peeling hidden layers
         uint32_t cameraSize;
         uint32_t alphaSize;
         uint32_t geometrySize;
+
+        // Size for visible layers
+        uint32_t visibleLayerSize;
+        uint32_t visibleLayerWideFovSize;
 
         size_t getSize() const { return sizeof(Header) + cameraSize + alphaSize + geometrySize + visibleLayerSize + visibleLayerWideFovSize; }
 
@@ -74,6 +72,8 @@ private:
     QuadSet& quadSet;
     PerspectiveCamera remoteCamera;
     PerspectiveCamera remoteCameraWideFOV;
+
+    std::vector<QuadMesh> meshesHidLayer;
 
 };
 
