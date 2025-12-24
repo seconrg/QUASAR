@@ -125,28 +125,6 @@ HybridStreamer::HybridStreamer(
         .material = &visibleMeshWideFOVMaterial,
         .usage = GL_DYNAMIC_DRAW,
     })
-    // , renderTarget({
-    //     .width = remoteRenderer.width,
-    //     .height = remoteRenderer.height,
-    //     .internalFormat = GL_RGBA16F,
-    //     .format = GL_RGBA,
-    //     .type = GL_HALF_FLOAT,
-    //     .wrapS = GL_CLAMP_TO_EDGE,
-    //     .wrapT = GL_CLAMP_TO_EDGE,
-    //     .minFilter = GL_LINEAR,
-    //     .magFilter = GL_LINEAR,
-    // })
-    // , renderTargetWideFOV({
-    //     .width = remoteRenderer.width,
-    //     .height = remoteRenderer.height,
-    //     .internalFormat = GL_RGBA16F,
-    //     .format = GL_RGBA,
-    //     .type = GL_HALF_FLOAT,
-    //     .wrapS = GL_CLAMP_TO_EDGE,
-    //     .wrapT = GL_CLAMP_TO_EDGE,
-    //     .minFilter = GL_LINEAR,
-    //     .magFilter = GL_LINEAR,
-    // })
     , alphaCodec(alphaAtlasRT.width, alphaAtlasRT.height)
     , DataStreamerTCP(params.depthAndProxiesURL)
 {
@@ -232,8 +210,43 @@ void HybridStreamer::setViewSphereDiameter(float viewSphereDiameter) {
     remoteRendererDP.setViewSphereDiameter(viewSphereDiameter);
 }
 
+typedef struct subFrameIndex {
+    uint row;
+    uint col;
+} subFrameIndex;
+
+// Find the next position in the atlas given the previous index
+inline subFrameIndex getNextSubFrameIndex(
+    uint currentRow, 
+    uint currentCol, 
+    uint subFrameWidth, 
+    uint subFrameHeight, 
+    uint atlasWidth, 
+    uint atlasHeight) 
+{
+    subFrameIndex nextIndex;
+    
+    nextIndex.col = currentCol + subFrameWidth;
+    nextIndex.row = currentRow;
+
+    // jump to the next row if we exceed the width
+    if (nextIndex.col >= atlasWidth) {
+        nextIndex.col = 0;
+        nextIndex.row += subFrameHeight;
+        if (nextIndex.row >= atlasHeight) {
+            nextIndex.row = 0; // Wrap around to the beginning
+            nextIndex.col = 0;
+        }
+    }
+    return nextIndex;
+}
+
 void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh)
 {
+    RenderStats renderStats;
+
+    nvtxRangePushA("Vertex generation");
+    
     meshFromBC4Shader.bind();
     {
         meshFromBC4Shader.setMat4("projection", camera.getProjectionMatrix());
@@ -253,7 +266,6 @@ void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh)
                                ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
     meshFromBC4Shader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
                                     GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
-    stats.totalGenMeshTime = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
     nvtxRangePop();
 
@@ -277,6 +289,131 @@ void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh)
                                        ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
     meshWarpReconstructShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
                                     GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
+    nvtxRangePop();
+
+     /*
+    ============================
+    Hidden Layer depth Peeling
+    ============================
+    */
+    // Render all the objects in the scene
+    renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
+
+    for (int layer = 0; layer < hiddenLayers; layer++) {
+        
+        // Always use the remoteCamera
+        auto& renderTargetToUse = frameRTsHidLayer[layer];
+        auto& renderTargetToUse_noTone = frameRTsHidLayer_noTone[layer];
+        auto& meshToUse = meshesHidLayer[layer];
+        
+        // blit the hidden layer from depth peeling renderer
+        remoteRendererDP.peelingLayers[layer + 1].blit(renderTargetToUse_noTone);
+
+        /*
+        ============================
+        Generate hidden layer reference frames
+        ============================
+        */
+
+        frameGenerator.createReferenceFrame(
+            renderTargetToUse_noTone, 
+            remoteCamera, 
+            meshToUse, 
+            referenceFrames[layer]);
+        
+        tonemapper.setUniforms(renderTargetToUse_noTone);
+        tonemapper.drawToRenderTarget(remoteRenderer, renderTargetToUse, false);
+    }
+
+    subFrameIndex atlasIndex = {0, 0};
+    uint subFrameWidth = depthStreamerRT.width;
+    uint subFrameHeight = depthStreamerRT.height;
+    
+    // blit the default layer, directly from depth peeling renderer
+    frameRTVisible.blit(
+        videoAtlasStreamerRT, 0, 0, 
+        subFrameWidth, 
+        subFrameHeight, 
+        atlasIndex.col, 
+        atlasIndex.row, 
+        atlasIndex.col + subFrameWidth, 
+        atlasIndex.row + subFrameHeight
+    );
+
+    frameRTVisible.blit(
+        alphaAtlasRT, 0, 0, 
+        subFrameWidth, 
+        subFrameHeight, 
+        atlasIndex.col, 
+        atlasIndex.row, 
+        atlasIndex.col + subFrameWidth, 
+        atlasIndex.row + subFrameHeight
+    );
+
+    atlasIndex = getNextSubFrameIndex(
+        atlasIndex.row, 
+        atlasIndex.col, 
+        subFrameWidth, 
+        subFrameHeight, 
+        videoAtlasStreamerRT.width, 
+        videoAtlasStreamerRT.height);
+    
+    // blit the hidden layers
+    for (int i=0; i< hiddenLayers; i++) {
+        frameRTsHidLayer[i].blit(
+            videoAtlasStreamerRT, 0, 0, 
+            frameRTsHidLayer[i].width, 
+            frameRTsHidLayer[i].height, 
+            atlasIndex.col, 
+            atlasIndex.row, 
+            atlasIndex.col + subFrameWidth, 
+            atlasIndex.row + subFrameHeight
+        );
+
+        frameRTsHidLayer[i].blit(
+            alphaAtlasRT, 0, 0, 
+            frameRTsHidLayer[i].width, 
+            frameRTsHidLayer[i].height, 
+            atlasIndex.col, 
+            atlasIndex.row, 
+            atlasIndex.col + subFrameWidth, 
+            atlasIndex.row + subFrameHeight
+        );
+
+        atlasIndex = getNextSubFrameIndex(
+            atlasIndex.row, 
+            atlasIndex.col, 
+            subFrameWidth, 
+            subFrameHeight, 
+            videoAtlasStreamerRT.width, 
+            videoAtlasStreamerRT.height);
+    }
+
+    // blit the wide-fov layer, from meshwarp streamer
+    frameRTVisibleWideFov.blit(
+        videoAtlasStreamerRT, 0, 0, 
+        subFrameWidth, 
+        subFrameHeight, 
+        atlasIndex.col, 
+        atlasIndex.row, 
+        atlasIndex.col + subFrameWidth, 
+        atlasIndex.row + subFrameHeight
+    );
+
+    frameRTVisibleWideFov.blit(
+        alphaAtlasRT, 0, 0, 
+        subFrameWidth, 
+        subFrameHeight, 
+        atlasIndex.col, 
+        atlasIndex.row, 
+        atlasIndex.col + subFrameWidth, 
+        atlasIndex.row + subFrameHeight
+    );
+    // DEBUGGING WRITING out atlas frames
+    videoAtlasStreamerRT.writeColorAsPNG("video_atlas.png");
+    alphaAtlasRT.writeAlphaAsPNG("alpha_atlas.png");
+
+
 }
 
 RenderStats HybridStreamer::generateFrame() {
@@ -302,10 +439,7 @@ RenderStats HybridStreamer::generateFrame() {
     stats.totalCompressTimeMs = depthStreamerRT.stats.compressTimeMs;
 
     // Reconstruct visible mesh using meshwarp
-    nvtxRangePushA("Vertex generation");
-    startTime = timeutils::getTimeMicros();
     reconstructMeshwarp(remoteCamera, visibleMesh);
-    nvtxRangePop();
 
     /*
     ============================
@@ -337,7 +471,8 @@ RenderStats HybridStreamer::generateFrame() {
     depthStreamerWideFOV.generateFrame();
 
     // Reconstruct wide fov visible mesh using meshwarp
-    
+    reconstructMeshwarp(remoteCamera, visibleMeshWideFOV);
+
 
     return renderStats;
 }

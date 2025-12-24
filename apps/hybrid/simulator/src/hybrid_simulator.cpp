@@ -51,6 +51,9 @@ int main(int argc, char** argv) {
     args::ValueFlag<uint> depthFactorIn(parser, "factor", "Depth Resolution Factor", {'a', "depth-factor"}, 1);
     args::ValueFlag<uint> vertexGroupSizeIn(parser, "vertex", "Size of vertex grouping", {'g', "vertex-group-size"}, 1);
     args::ValueFlag<float> remoteFOVIn(parser, "remote-fov", "Remote camera FOV in degrees", {'F', "remote-fov"}, 80.0f);
+    args::ValueFlag<float> remoteFOVWideIn(parser, "remote-fov-wide", "Remote camera FOV in degrees for wide fov", {'W', "remote-fov-wide"}, 140.0f);
+    args::ValueFlag<int> maxHiddenLayersIn(parser, "layers", "Max hidden layers", {'n', "max-hidden-layers"}, 3);
+    args::ValueFlag<float> viewSphereDiameterIn(parser, "view-sphere-diameter", "Size of view sphere in m", {'B', "view-size"}, 0.5f);
     try {
         parser.ParseCLI(argc, argv);
     } catch (args::Help) {
@@ -84,6 +87,9 @@ int main(int argc, char** argv) {
     Path cameraPathFile = args::get(cameraPathFileIn);
     int numPoses = args::get(numPosesIn);
 
+    uint maxHidLayers = args::get(maxHiddenLayersIn);
+    uint maxLayers = maxHidLayers + 2;
+
     uint depthFactor = args::get(depthFactorIn);
     uint vertexGroupSize = args::get(vertexGroupSizeIn);
 
@@ -116,10 +122,10 @@ int main(int argc, char** argv) {
     camera.setViewMatrix(remoteCamera.getViewMatrix());
 
     QuadSet quadSet(remoteWindowSize);
-    float remoteFOVWide = 140.0f;
-    float viewSphereDiameter = 1.0f;
+    float remoteFOVWide = args::get(remoteFOVWideIn);
+    float viewSphereDiameter = args::get(viewSphereDiameterIn);
 
-    DepthPeelingRenderer remoteRendererDP(config, 3, true);
+    DepthPeelingRenderer remoteRendererDP(config, maxLayers, true);
 
     HybridStreamer hybridStreamer(
         quadSet,
