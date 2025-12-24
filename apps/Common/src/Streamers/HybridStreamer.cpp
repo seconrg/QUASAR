@@ -196,13 +196,27 @@ HybridStreamer::HybridStreamer(
     remoteCameraWideFOV.setFovyDegrees(params.wideFOV);
     remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
 
-    // visibleMeshNode = Node(&visibleMesh);
-    // visibleMeshNode.frustumCulled = false;
+    visibleMeshNode = Node(&visibleMesh);
+    visibleMeshNode.frustumCulled = false;
 
-    // visibleMeshWideFOVNode = Node(&visibleMeshWideFOV);
-    // visibleMeshWideFOVNode.frustumCulled = false;
+    visibleMeshWideFOVNode = Node(&visibleMeshWideFOV);
+    visibleMeshWideFOVNode.frustumCulled = false;
 
     // sceneWideFov.addChildNode(&visibleMeshNode);
+}
+
+void HybridStreamer::addMeshesToScene(Scene& localScene) {
+    
+    localScene.addChildNode(&visibleMeshWideFOVNode);
+
+    // add all hidden layers, from farthest to nearest
+    for (int layer = hiddenLayers - 1; layer >=0 ; layer--) {
+        localScene.addChildNode(&nodesHidLayer[layer]);
+        localScene.addChildNode(&wireframesHidLayer[layer]);
+    }
+
+    localScene.addChildNode(&visibleMeshNode);
+    
 }
 
 void HybridStreamer::setViewSphereDiameter(float viewSphereDiameter) {
@@ -348,7 +362,7 @@ RenderStats HybridStreamer::generateFrame() {
     depthStreamerWideFOV.generateFrame();
 
     // Reconstruct wide fov visible mesh using meshwarp
-    reconstructMeshwarp(remoteCamera, visibleMeshWideFOV);
+    reconstructMeshwarp(remoteCameraWideFOV, visibleMeshWideFOV);
 
 
 

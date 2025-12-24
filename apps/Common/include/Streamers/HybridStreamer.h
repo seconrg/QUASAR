@@ -168,8 +168,8 @@ private:
     UnlitMaterial visibleMeshWideFOVMaterial;
 
     // visible and wide fov nodes
-    // Node visibleMeshNode;
-    // Node visibleMeshWideFOVNode;
+    Node visibleMeshNode;
+    Node visibleMeshWideFOVNode;
 
     void reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh);
 

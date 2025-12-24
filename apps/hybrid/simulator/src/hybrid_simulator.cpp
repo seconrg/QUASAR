@@ -135,9 +135,10 @@ int main(int argc, char** argv) {
             .wideFOV = remoteFOVWide,
         });
 
-    Node node(&hybridStreamer.getVisibleMesh());
-    node.frustumCulled = false;
-    scene.addChildNode(&node);
+    // Node node(&hybridStreamer.getVisibleMesh());
+    // node.frustumCulled = false;
+    // scene.addChildNode(&node);
+    hybridStreamer.addMeshesToScene(scene);
 
     // remoteScene.skybox = nullptr;
     scene.skybox = nullptr;

@@ -135,6 +135,7 @@ int main(int argc, char** argv) {
 
     // Post processing
     HoleFiller holeFiller;
+    Tonemapper tonemapper;
 
     Recorder recorder({
         .width = windowSize.x,
@@ -146,7 +147,7 @@ int main(int argc, char** argv) {
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_LINEAR,
         .magFilter = GL_LINEAR,
-    }, renderer, holeFiller, outputPath, config.targetFramerate);
+    }, renderer, tonemapper, outputPath, config.targetFramerate);
     CameraAnimator cameraAnimator(cameraPathFile, numPoses);
 
     if (saveImages) {
@@ -507,15 +508,17 @@ int main(int argc, char** argv) {
         totalDT += dt;
 
         // // Render generated meshes
-        quasar.setDrawState(QuadMesh::DrawState::OPAQUE); // draw opaque quads first
+        // quasar.setDrawState(QuadMesh::DrawState::OPAQUE); // draw opaque quads first
         renderStats = renderer.drawObjects(localScene, camera);
-        quasar.setDrawState(QuadMesh::DrawState::TRANSPARENT); // then draw transparent quads
-        renderStats += renderer.drawObjects(localScene, camera, 0);
+        // quasar.setDrawState(QuadMesh::DrawState::TRANSPARENT); // then draw transparent quads
+        // renderStats += renderer.drawObjects(localScene, camera, 0);
 
-        auto quadsGenerator = quasar.getQuadsGenerator();
-        holeFiller.enableTonemapping(!showNormals);
-        holeFiller.setDepthThreshold(quadsGenerator->params.depthThreshold);
-        holeFiller.drawToScreen(renderer);
+        tonemapper.drawToScreen(renderer);
+
+        // auto quadsGenerator = quasar.getQuadsGenerator();
+        // holeFiller.enableTonemapping(!showNormals);
+        // holeFiller.setDepthThreshold(quadsGenerator->params.depthThreshold);
+        // holeFiller.drawToScreen(renderer);
         
 
         if (rerenderIntervalMs > 0.0 && (now - lastRenderTime) >= timeutils::millisToSeconds(rerenderIntervalMs - 1.0)) {
