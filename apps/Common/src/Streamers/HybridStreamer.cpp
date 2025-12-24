@@ -291,6 +291,67 @@ void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh)
                                     GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
     nvtxRangePop();
 
+}
+
+RenderStats HybridStreamer::generateFrame() {
+    // Reset stats
+    stats = { 0 };
+    RenderStats renderStats;
+
+    // Render all objects in scene
+    double startTime = timeutils::getTimeMicros();
+    renderStats = remoteRenderer.drawObjects(remoteScene, remoteCamera);
+
+    // Copy to intermediate render target
+    tonemapper.enableTonemapping(false);
+    tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisible);
+
+    // Copy color and depth to video frames
+    tonemapper.enableTonemapping(true);
+    depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerRT);
+    stats.totalRenderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+
+    // Compress depth map to BC4 format with ZSTD
+    stats.compressedSize = depthStreamerRT.generateFrame();
+    stats.totalCompressTimeMs = depthStreamerRT.stats.compressTimeMs;
+
+    // Reconstruct visible mesh using meshwarp
+    reconstructMeshwarp(remoteCamera, visibleMesh);
+
+    /*
+    ============================
+    Wide FOV visible layer rendering
+    ============================
+    */
+
+    remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(
+        GL_KEEP, GL_KEEP, GL_REPLACE);
+
+    remoteRenderer.pipeline.writeMaskState.disableColorWrites();
+    // From the previous mesh, see what parts are visible in wide fov
+    renderStats += remoteRenderer.drawObjectsNoLighting(sceneWideFov, remoteCameraWideFOV);
+    
+    // use the previous generated stencil buffer to avoid drawing where wide fov has drawn
+    remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
+    remoteRenderer.pipeline.writeMaskState.enableColorWrites();
+    
+    // Draw the whole scene and composite with wide fov
+    renderStats += remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCameraWideFOV, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // render with tonemapper for video streaming
+    tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisibleWideFov);
+    remoteRenderer.outputRT.blit(frameRTVisibleWideFov);
+    tonemapper.enableTonemapping(true);
+
+    // render into depthStreamerWideFOV
+    depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerWideFOV);
+    depthStreamerWideFOV.generateFrame();
+
+    // Reconstruct wide fov visible mesh using meshwarp
+    reconstructMeshwarp(remoteCamera, visibleMeshWideFOV);
+
+
+
      /*
     ============================
     Hidden Layer depth Peeling
@@ -308,6 +369,7 @@ void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh)
         
         // blit the hidden layer from depth peeling renderer
         remoteRendererDP.peelingLayers[layer + 1].blit(renderTargetToUse_noTone);
+        renderTargetToUse_noTone.writeColorAsPNG("hid_layer_no_tone_" + std::to_string(layer) + ".png");
 
         /*
         ============================
@@ -413,65 +475,6 @@ void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh)
     videoAtlasStreamerRT.writeColorAsPNG("video_atlas.png");
     alphaAtlasRT.writeAlphaAsPNG("alpha_atlas.png");
 
-
-}
-
-RenderStats HybridStreamer::generateFrame() {
-    // Reset stats
-    stats = { 0 };
-    RenderStats renderStats;
-
-    // Render all objects in scene
-    double startTime = timeutils::getTimeMicros();
-    renderStats = remoteRenderer.drawObjects(remoteScene, remoteCamera);
-
-    // Copy to intermediate render target
-    tonemapper.enableTonemapping(false);
-    tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisible);
-
-    // Copy color and depth to video frames
-    tonemapper.enableTonemapping(true);
-    depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerRT);
-    stats.totalRenderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
-
-    // Compress depth map to BC4 format with ZSTD
-    stats.compressedSize = depthStreamerRT.generateFrame();
-    stats.totalCompressTimeMs = depthStreamerRT.stats.compressTimeMs;
-
-    // Reconstruct visible mesh using meshwarp
-    reconstructMeshwarp(remoteCamera, visibleMesh);
-
-    /*
-    ============================
-    Wide FOV visible layer rendering
-    ============================
-    */
-
-    remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(
-        GL_KEEP, GL_KEEP, GL_REPLACE);
-
-    remoteRenderer.pipeline.writeMaskState.disableColorWrites();
-    // From the previous mesh, see what parts are visible in wide fov
-    renderStats += remoteRenderer.drawObjectsNoLighting(sceneWideFov, remoteCameraWideFOV);
-    
-    // use the previous generated stencil buffer to avoid drawing where wide fov has drawn
-    remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
-    remoteRenderer.pipeline.writeMaskState.enableColorWrites();
-    
-    // Draw the whole scene and composite with wide fov
-    renderStats += remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCameraWideFOV, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    // render with tonemapper for video streaming
-    tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisibleWideFov);
-    remoteRenderer.outputRT.blit(frameRTVisibleWideFov);
-    tonemapper.enableTonemapping(true);
-
-    // render into depthStreamerWideFOV
-    depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerWideFOV);
-    depthStreamerWideFOV.generateFrame();
-
-    // Reconstruct wide fov visible mesh using meshwarp
-    reconstructMeshwarp(remoteCamera, visibleMeshWideFOV);
 
 
     return renderStats;

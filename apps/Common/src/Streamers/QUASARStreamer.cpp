@@ -261,13 +261,13 @@ void QUASARStreamer::addMeshesToScene(Scene& localScene) {
         localScene.addChildNode(&depthNodesHidLayer[layer]);
     }
 
-    // for (int i = 0; i < meshScenes.size(); i++) {
-    //     localScene.addChildNode(&referenceFrameNodesLocal[i]);
-    //     localScene.addChildNode(&referenceFrameWireframesLocal[i]);
-    // }
-    // localScene.addChildNode(&residualFrameNodeLocal);
-    // localScene.addChildNode(&residualFrameWireframeLocal);
-    // localScene.addChildNode(&depthNode);
+    for (int i = 0; i < meshScenes.size(); i++) {
+        localScene.addChildNode(&referenceFrameNodesLocal[i]);
+        localScene.addChildNode(&referenceFrameWireframesLocal[i]);
+    }
+    localScene.addChildNode(&residualFrameNodeLocal);
+    localScene.addChildNode(&residualFrameWireframeLocal);
+    localScene.addChildNode(&depthNode);
 }
 
 void QUASARStreamer::setViewSphereDiameter(float viewSphereDiameter) {
@@ -322,6 +322,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         else if (layer < maxLayers - 1) {
             // Hidden layers need to use the noTone render targets to generate quads for some reason...
             remoteRendererDP.peelingLayers[hiddenLayerIndex+1].blit(renderTargetToUse_noTone);
+            renderTargetToUse_noTone.writeColorAsPNG("quasar_hid_layer_no_tone_" + std::to_string(layer) + ".png");
         }
         // Wide fov camera
         else {
@@ -537,6 +538,9 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         0, 0, residualFrameRT_noTone.width, residualFrameRT_noTone.height,
         col, row, dstWidth, dstHeight
     );
+
+    videoAtlasStreamerRT.writeColorAsPNG("debug_quasar_video_atlas.png");
+    alphaAtlasRT.writeAlphaAsPNG("debug_quasar_alpha_atlas.png");
 
     return renderStats;
 }

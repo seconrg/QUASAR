@@ -31,7 +31,7 @@ using namespace quasar;
 
 int main(int argc, char** argv) {
     Config config{};
-    config.title = "MeshWarp Simulator";
+    config.title = "Hybrid Simulator";
 
     args::ArgumentParser parser(config.title);
     args::HelpFlag help(parser, "help", "Display this help menu", {'h', "help"});
@@ -103,6 +103,7 @@ int main(int argc, char** argv) {
     ForwardRenderer renderer(config);
     config.width = remoteWindowSize.x;
     config.height = remoteWindowSize.y;
+    DepthPeelingRenderer remoteRendererDP(config, maxLayers-1, true);
     DepthPeelingRenderer remoteRenderer(config);
 
     // "Remote" scene
@@ -124,8 +125,6 @@ int main(int argc, char** argv) {
     QuadSet quadSet(remoteWindowSize);
     float remoteFOVWide = args::get(remoteFOVWideIn);
     float viewSphereDiameter = args::get(viewSphereDiameterIn);
-
-    DepthPeelingRenderer remoteRendererDP(config, maxLayers, true);
 
     HybridStreamer hybridStreamer(
         quadSet,
