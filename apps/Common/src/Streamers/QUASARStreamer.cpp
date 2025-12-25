@@ -184,7 +184,9 @@ QUASARStreamer::QUASARStreamer(
 
     for (int layer = 0; layer < numHidLayers; layer++) {
         meshesHidLayer.emplace_back(
-            quadSet, frameRTsHidLayer_noTone[layer].colorTexture, frameRTsHidLayer_noTone[layer].alphaTexture);
+            quadSet, 
+            frameRTsHidLayer_noTone[layer].colorTexture, 
+            frameRTsHidLayer_noTone[layer].alphaTexture);
         if (layer == numHidLayers - 1) {
             // Increase expand amount by 3px for wide FOV
             // This makes it so that we can merge more and still cover holes
@@ -328,10 +330,11 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         else {
             // Draw old center mesh at new remoteCamera layer, filling stencil buffer with 1
             remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
-            remoteRenderer.pipeline.writeMaskState.disableColorWrites();
+            // remoteRenderer.pipeline.writeMaskState.disableColorWrites();
             wideFovNodes[currMeshIndex].visible = true;
             wideFovNodes[prevMeshIndex].visible = false;
             renderStats += remoteRenderer.drawObjectsNoLighting(sceneWideFov, remoteCameraToUse);
+            remoteRenderer.outputRT.writeColorAsPNG("quasar_wide_fov_no_tone.png");
 
             // Render remoteScene using stencil buffer as a mask
             // At values where stencil buffer is not 1, remoteScene should render

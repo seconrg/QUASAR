@@ -1,6 +1,7 @@
 #include <Streamers/HybridStreamer.h>
 // #include <shaders_common.h>
 #include <nvtx3/nvToolsExt.h>
+#include <Utils/FileIO.h>
 
 #ifndef __ANDROID__
 #define THREADS_PER_LOCALGROUP 32
@@ -15,6 +16,7 @@ HybridStreamer::HybridStreamer(
         DepthPeelingRenderer& remoteRendererDP,
         DeferredRenderer& remoteRenderer, 
         Scene& remoteScene,
+        Scene& localScene,
         PerspectiveCamera& remoteCamera,
         const HybridStreamerCreateParams& params)
     : videoURL(params.videoURL)
@@ -23,6 +25,7 @@ HybridStreamer::HybridStreamer(
     , remoteRendererDP(remoteRendererDP)
     , remoteRenderer(remoteRenderer)
     , remoteScene(remoteScene)
+    , localScene(localScene)
     , remoteCamera(remoteCamera)
     , adjustedSize(glm::uvec2(remoteRenderer.width, remoteRenderer.height) / params.vertexGroupSize)
     , depthMapSize(glm::uvec2(remoteRenderer.width, remoteRenderer.height) / params.depthFactor)
@@ -198,24 +201,38 @@ HybridStreamer::HybridStreamer(
 
     visibleMeshNode = Node(&visibleMesh);
     visibleMeshNode.frustumCulled = false;
+    // visibleMeshNode.wireframe = true;
+    // visibleMeshNode.overrideMaterial = new QuadMaterial({ .baseColor = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f) });
 
     visibleMeshWideFOVNode = Node(&visibleMeshWideFOV);
     visibleMeshWideFOVNode.frustumCulled = false;
 
-    // sceneWideFov.addChildNode(&visibleMeshNode);
+    // visibleMeshWideFOVNode.wireframe = true;
+    // visibleMeshWideFOVNode.overrideMaterial = new QuadMaterial({ .baseColor = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f) });
+
+    // Add meshes to wide fov scene
+    wideFovNode = Node(&visibleMesh);
+    wideFovNode.frustumCulled = false;
+    for (int layer = hiddenLayers - 1; layer >=0 ; layer--) {
+        wideFovScene.addChildNode(&nodesHidLayer[layer]);
+    }
+    wideFovScene.addChildNode(&visibleMeshNode);
+
 }
 
 void HybridStreamer::addMeshesToScene(Scene& localScene) {
     
     localScene.addChildNode(&visibleMeshWideFOVNode);
-
     // add all hidden layers, from farthest to nearest
     for (int layer = hiddenLayers - 1; layer >=0 ; layer--) {
         localScene.addChildNode(&nodesHidLayer[layer]);
-        localScene.addChildNode(&wireframesHidLayer[layer]);
+        // localScene.addChildNode(&wireframesHidLayer[layer]);
     }
 
     localScene.addChildNode(&visibleMeshNode);
+
+
+    // wideFovScene = localScene; // copy for wide fov rendering
     
 }
 
@@ -255,7 +272,7 @@ inline subFrameIndex getNextSubFrameIndex(
     return nextIndex;
 }
 
-void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh)
+void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, BC4DepthStreamer &depthStreamer)
 {
     RenderStats renderStats;
 
@@ -273,7 +290,7 @@ void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh)
     {
         meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, mesh.vertexBuffer);
         meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, mesh.indexBuffer);
-        meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 2, depthStreamerRT.bc4CompressedBuffer);
+        meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 2, depthStreamer.bc4CompressedBuffer);
     }
     // Dispatch compute shader to generate vertices and indices for mesh
     meshFromBC4Shader.dispatch(((adjustedSize.x + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
@@ -312,61 +329,7 @@ RenderStats HybridStreamer::generateFrame() {
     stats = { 0 };
     RenderStats renderStats;
 
-    // Render all objects in scene
-    double startTime = timeutils::getTimeMicros();
-    renderStats = remoteRenderer.drawObjects(remoteScene, remoteCamera);
-
-    // Copy to intermediate render target
-    tonemapper.enableTonemapping(false);
-    tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisible);
-
-    // Copy color and depth to video frames
-    tonemapper.enableTonemapping(true);
-    depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerRT);
-    stats.totalRenderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
-
-    // Compress depth map to BC4 format with ZSTD
-    stats.compressedSize = depthStreamerRT.generateFrame();
-    stats.totalCompressTimeMs = depthStreamerRT.stats.compressTimeMs;
-
-    // Reconstruct visible mesh using meshwarp
-    reconstructMeshwarp(remoteCamera, visibleMesh);
-
     /*
-    ============================
-    Wide FOV visible layer rendering
-    ============================
-    */
-
-    remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(
-        GL_KEEP, GL_KEEP, GL_REPLACE);
-
-    remoteRenderer.pipeline.writeMaskState.disableColorWrites();
-    // From the previous mesh, see what parts are visible in wide fov
-    renderStats += remoteRenderer.drawObjectsNoLighting(sceneWideFov, remoteCameraWideFOV);
-    
-    // use the previous generated stencil buffer to avoid drawing where wide fov has drawn
-    remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
-    remoteRenderer.pipeline.writeMaskState.enableColorWrites();
-    
-    // Draw the whole scene and composite with wide fov
-    renderStats += remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCameraWideFOV, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    // render with tonemapper for video streaming
-    tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisibleWideFov);
-    remoteRenderer.outputRT.blit(frameRTVisibleWideFov);
-    tonemapper.enableTonemapping(true);
-
-    // render into depthStreamerWideFOV
-    depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerWideFOV);
-    depthStreamerWideFOV.generateFrame();
-
-    // Reconstruct wide fov visible mesh using meshwarp
-    reconstructMeshwarp(remoteCameraWideFOV, visibleMeshWideFOV);
-
-
-
-     /*
     ============================
     Hidden Layer depth Peeling
     ============================
@@ -382,8 +345,8 @@ RenderStats HybridStreamer::generateFrame() {
         auto& meshToUse = meshesHidLayer[layer];
         
         // blit the hidden layer from depth peeling renderer
-        remoteRendererDP.peelingLayers[layer + 1].blit(renderTargetToUse_noTone);
-        renderTargetToUse_noTone.writeColorAsPNG("hid_layer_no_tone_" + std::to_string(layer) + ".png");
+        remoteRendererDP.peelingLayers[layer+1].blit(renderTargetToUse_noTone);
+        // renderTargetToUse_noTone.writeColorAsPNG("hid_layer_no_tone_" + std::to_string(layer) + ".png");
 
         /*
         ============================
@@ -400,6 +363,64 @@ RenderStats HybridStreamer::generateFrame() {
         tonemapper.setUniforms(renderTargetToUse_noTone);
         tonemapper.drawToRenderTarget(remoteRenderer, renderTargetToUse, false);
     }
+
+    // // Render all objects in scene
+    double startTime = timeutils::getTimeMicros();
+    renderStats = remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCamera);
+
+    // Copy to intermediate render target
+    tonemapper.enableTonemapping(false);
+    tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisible);
+
+    // Copy color and depth to video frames
+    tonemapper.enableTonemapping(true);
+    depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerRT);
+    stats.totalRenderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+
+    // Compress depth map to BC4 format with ZSTD
+    stats.compressedSize = depthStreamerRT.generateFrame();
+    stats.totalCompressTimeMs = depthStreamerRT.stats.compressTimeMs;
+
+    // Reconstruct visible mesh using meshwarp
+    reconstructMeshwarp(remoteCamera, visibleMesh, depthStreamerRT);
+
+    /*
+    ============================
+    Wide FOV visible layer rendering
+    ============================
+    */
+
+    remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
+
+    remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
+
+    remoteRenderer.pipeline.writeMaskState.disableColorWrites();
+    // From the previous mesh, see what parts are visible in wide fov
+    renderStats += remoteRenderer.drawObjectsNoLighting(wideFovScene, remoteCameraWideFOV);
+    tonemapper.enableTonemapping(false);
+    tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisibleWideFov);
+    tonemapper.enableTonemapping(true);
+    
+    // use the previous generated stencil buffer to avoid drawing where wide fov has drawn
+    remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
+    remoteRenderer.pipeline.writeMaskState.enableColorWrites();
+    
+    // Draw the whole scene and composite with wide fov
+    renderStats += remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCameraWideFOV, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    remoteRenderer.pipeline.stencilState.restoreStencilState();
+    // render with tonemapper for video streaming
+    tonemapper.enableTonemapping(false);
+    tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisibleWideFov);
+    tonemapper.enableTonemapping(true);
+
+    // render into depthStreamerWideFOV
+    depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerWideFOV);
+    depthStreamerWideFOV.generateFrame();
+
+    // Reconstruct wide fov visible mesh using meshwarp
+    reconstructMeshwarp(remoteCameraWideFOV, visibleMeshWideFOV, depthStreamerWideFOV);
+
+    // depthStreamerWideFOV.writeColorAsPNG("debug_depth_widefov.png");
 
     subFrameIndex atlasIndex = {0, 0};
     uint subFrameWidth = depthStreamerRT.width;
@@ -446,10 +467,10 @@ RenderStats HybridStreamer::generateFrame() {
             atlasIndex.row + subFrameHeight
         );
 
-        frameRTsHidLayer[i].blit(
+        frameRTsHidLayer_noTone[i].blit(
             alphaAtlasRT, 0, 0, 
-            frameRTsHidLayer[i].width, 
-            frameRTsHidLayer[i].height, 
+            frameRTsHidLayer_noTone[i].width, 
+            frameRTsHidLayer_noTone[i].height, 
             atlasIndex.col, 
             atlasIndex.row, 
             atlasIndex.col + subFrameWidth, 
@@ -486,10 +507,8 @@ RenderStats HybridStreamer::generateFrame() {
         atlasIndex.row + subFrameHeight
     );
     // DEBUGGING WRITING out atlas frames
-    videoAtlasStreamerRT.writeColorAsPNG("video_atlas.png");
-    alphaAtlasRT.writeAlphaAsPNG("alpha_atlas.png");
-
-
+    // videoAtlasStreamerRT.writeColorAsPNG("video_atlas.png");
+    // alphaAtlasRT.writeAlphaAsPNG("alpha_atlas.png");
 
     return renderStats;
 }

@@ -107,6 +107,7 @@ public:
     void writeToHDR(const std::string& filename);
 #ifdef GL_CORE
     void saveDepthToFile(const std::string& filename);
+    void saveDepthToImage(const std::string& filename);
 #endif
     void writeJPGToMemory(std::vector<unsigned char>& outputData, int quality = 85);
 

@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
     config.width = remoteWindowSize.x;
     config.height = remoteWindowSize.y;
     DepthPeelingRenderer remoteRendererDP(config, maxLayers-1, true);
-    DepthPeelingRenderer remoteRenderer(config);
+    DeferredRenderer remoteRenderer(config);
 
     // "Remote" scene
     Scene remoteScene;
@@ -128,9 +128,9 @@ int main(int argc, char** argv) {
 
     HybridStreamer hybridStreamer(
         quadSet,
-        remoteRendererDP, remoteRenderer, remoteScene, remoteCamera,
+        remoteRendererDP, remoteRenderer, remoteScene, scene, remoteCamera,
         {
-            .hiddenLayers = 3,
+            .hiddenLayers = maxHidLayers,
             .viewSphereDiameter = viewSphereDiameter,
             .wideFOV = remoteFOVWide,
         });
@@ -429,8 +429,9 @@ int main(int argc, char** argv) {
             Mesh *mesh = dynamic_cast<Mesh*>(node->entities[0]);
             // spdlog::info("   The number of textures is {}", mesh->getMaterial()->getTextureCount());
             // mesh->getMaterial()->writeTextureToFile(0, "mesh_" + std::to_string(childid) + ".png");
-            spdlog::info("  Mesh {}: {} triangles", childid, mesh->vertexBuffer.getSize()/3);
+            spdlog::info("  Mesh {}: {} triangles", childid, mesh->indexBuffer.getSize()/3);
         }
+        // camera.setFovyDegrees(140.0f); // Use wide fov for local rendering
         renderStats = renderer.drawObjects(scene, camera);
 
         tonemapper.drawToScreen(renderer);

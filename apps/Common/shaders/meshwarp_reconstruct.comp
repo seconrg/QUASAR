@@ -94,10 +94,25 @@ void main() {
     vec3 topRightView = worldToView(view, topRightVertex);
  
     /* Code using ndc depth comparison - commented out */
-    // vec3 bottomLeftNDC = viewToNDC3(projection, bottomLeftView);
-    // vec3 bottomRightNDC = viewToNDC3(projection, bottomRightView);
-    // vec3 topLeftNDC = viewToNDC3(projection, topLeftView);
-    // vec3 topRightNDC = viewToNDC3(projection, topRightView);
+    vec3 bottomLeftNDC = viewToNDC3(projection, bottomLeftView);
+    vec3 bottomRightNDC = viewToNDC3(projection, bottomRightView);
+    vec3 topLeftNDC = viewToNDC3(projection, topLeftView);
+    vec3 topRightNDC = viewToNDC3(projection, topRightView);
+
+    // if (bottomLeftNDC.z < MAX_DEPTH ||
+    //     bottomRightNDC.z < MAX_DEPTH ||
+    //     topLeftNDC.z < MAX_DEPTH ||
+    //     topRightNDC.z < MAX_DEPTH) {
+    //     // mark as non-exist
+    //     indices[shaderIndex * INDICES_IN_A_QUAD + 0u] = 0u;
+    //     indices[shaderIndex * INDICES_IN_A_QUAD + 1u] = 0u;
+    //     indices[shaderIndex * INDICES_IN_A_QUAD + 2u] = 0u;
+    //     indices[shaderIndex * INDICES_IN_A_QUAD + 3u] = 0u;
+    //     indices[shaderIndex * INDICES_IN_A_QUAD + 4u] = 0u;
+    //     indices[shaderIndex * INDICES_IN_A_QUAD + 5u] = 0u;
+    //     return;
+    // }
+
 
     // compare the depth value and decide whether the triangle exist
     // here we also use the inverse depth comparison showed in create_quadmap.comp

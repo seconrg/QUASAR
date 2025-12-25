@@ -123,6 +123,12 @@ public:
         colorTexture.writeJPGToMemory(outputData, quality);
         unbind();
     }
+
+    void writeDepthAsPNG(const std::string& path) {
+        bind();
+        depthStencilTexture.saveDepthToImage(path);
+        unbind();
+    }
 };
 
 } // namespace quasar

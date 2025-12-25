@@ -88,6 +88,7 @@ public:
         DepthPeelingRenderer& remoteRendererDP,
         DeferredRenderer& remoteRenderer, 
         Scene& remoteScene,
+        Scene& localScene,
         PerspectiveCamera& remoteCamera,
         const HybridStreamerCreateParams& params = {});
 
@@ -135,14 +136,14 @@ private:
     DeferredRenderer& remoteRenderer;
 
     Scene& remoteScene;
+    Scene& localScene;
     
     PerspectiveCamera& remoteCamera;
     PerspectiveCamera remoteCameraWideFOV;
 
     // Wide fov
     Node wideFovNode;
-    Scene meshScene;
-    Scene sceneWideFov;
+    Scene wideFovScene;
 
     AlphaCodec alphaCodec;
 
@@ -171,7 +172,7 @@ private:
     Node visibleMeshNode;
     Node visibleMeshWideFOVNode;
 
-    void reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh);
+    void reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, BC4DepthStreamer &depthStreamer);
 
 };
 
