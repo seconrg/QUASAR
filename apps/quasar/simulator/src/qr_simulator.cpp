@@ -54,6 +54,8 @@ int main(int argc, char** argv) {
     args::ValueFlag<float> remoteFOVWideIn(parser, "remote-fov-wide", "Remote camera FOV in degrees for wide fov", {'W', "remote-fov-wide"}, 140.0f);
     args::ValueFlag<int> maxHiddenLayersIn(parser, "layers", "Max hidden layers", {'n', "max-hidden-layers"}, 3);
     args::ValueFlag<float> viewSphereDiameterIn(parser, "view-sphere-diameter", "Size of view sphere in m", {'B', "view-size"}, 0.5f);
+    // args::ValueFlag<std::string> EIn(parser, "E", "Path to E's size for each depth peeling call", {'E', "E-path"}, "");
+    
     try {
         parser.ParseCLI(argc, argv);
     } catch (args::Help) {
@@ -84,6 +86,43 @@ int main(int argc, char** argv) {
 
     Path sceneFile = args::get(sceneFileIn);
     Path cameraPathFile = args::get(cameraPathFileIn);
+    
+    // // Read E path
+    // Path EPathFile = args::get(EIn);
+    // std::ifstream efile(EPathFile.c_str());
+    // if (!efile.is_open()) {
+    //     spdlog::error("Failed to open E path file: {}", EPathFile.str());
+    //     return -1;
+    // }
+
+    // std::queue<float> Es;
+    // std::string line;
+    // int lineNumber = 0;
+    // while(std::getline(efile, line)) {
+    //     if (line.empty() || line[0] == '#' || lineNumber == 0) {
+    //         lineNumber++;
+    //         continue; // Skip empty lines and comments
+    //     }
+    //     // the delimiter is , so we can have float numbers like 0.5,1.0,1.5
+    //     std::stringstream ss(line);
+    //     std::string token;
+    //     // We only need the second element of each line
+    //     int counter = 0;
+    //     while (std::getline(ss, token, ',')) {
+    //         if (counter == 1) {
+    //             float E = std::stof(token);
+    //             Es.push(E);
+    //             break;
+    //         }
+    //         counter++;
+    //     }
+    //     lineNumber++;
+    // }
+    // efile.close();
+
+    // spdlog::info("Loaded {} E values from {}", Es.size(), EPathFile.str());
+
+
     int numPoses = args::get(numPosesIn);
     Path outputPath = Path(args::get(outputPathIn)); outputPath.mkdirRecursive();
 
@@ -133,6 +172,20 @@ int main(int argc, char** argv) {
 
     quasar.addMeshesToScene(localScene);
 
+    // filestream for dumping the predicted pose (remote pose) and the camera pose (local pose)
+
+    std::ofstream poseFile("predicted_poses.csv");
+    poseFile << "time_ms,"
+             << "predicted_pos_x,predicted_pos_y,predicted_pos_z,"
+             << "predicted_rot_x,predicted_rot_y,predicted_rot_z,"
+             << std::endl;
+    std::ofstream cameraPoseFile("camera_poses.csv");
+    cameraPoseFile << "time_ms,"
+             << "camera_pos_x,camera_pos_y,camera_pos_z,"
+             << "camera_rot_x,camera_rot_y,camera_rot_z"
+             << std::endl;
+    
+
     // Post processing
     HoleFiller holeFiller;
     Tonemapper tonemapper;
@@ -147,7 +200,7 @@ int main(int argc, char** argv) {
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_LINEAR,
         .magFilter = GL_LINEAR,
-    }, renderer, tonemapper, outputPath, config.targetFramerate);
+    }, renderer, holeFiller, outputPath, config.targetFramerate);
     CameraAnimator cameraAnimator(cameraPathFile, numPoses);
 
     if (saveImages) {
@@ -181,6 +234,8 @@ int main(int argc, char** argv) {
     float networkLatency = !cameraPathFileIn ? 0.0f : args::get(networkLatencyIn);
     float networkJitter = !cameraPathFileIn ? 0.0f : args::get(networkJitterIn);
     bool posePrediction = posePredictionIn;
+    spdlog::info("Pose Prediction: {}", posePrediction ? "Enabled" : "Disabled");
+    spdlog::info("Pose Smoothing: {}", poseSmoothingIn ? "Enabled" : "Disabled");
     bool poseSmoothing = poseSmoothingIn;
     PoseSendRecvSimulator poseSendRecvSimulator({
         .networkLatencyMs = networkLatency,
@@ -189,6 +244,10 @@ int main(int argc, char** argv) {
         .posePrediction = posePrediction,
         .poseSmoothing = poseSmoothing,
     });
+
+    spdlog::info("Network Latency: {} ms", networkLatency);
+    spdlog::info("Network Jitter: {} ms", networkJitter);
+    spdlog::info("View Sphere Diameter: {} m", viewSphereDiameter);
 
     bool* showLayers = new bool[maxLayers];
     for (int i = 0; i < maxLayers; i++) {
@@ -452,6 +511,8 @@ int main(int argc, char** argv) {
     double lastRenderTime = -INFINITY;
     bool updateClient = !saveImages;
     int frameCounter = 0;
+
+    bool dumpCameraPoses = false;
     app.onRender([&](double now, double dt) {
         // Handle mouse input
         if (!(ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantCaptureMouse)) {
@@ -543,9 +604,26 @@ int main(int argc, char** argv) {
                 Pose clientPosePred;
                 if (poseSendRecvSimulator.recvPoseToRender(clientPosePred, now)) {
                     remoteCamera.setViewMatrix(clientPosePred.mono.view);
+
                 }
                 // If we do not have a new pose, just send a new frame with the old pose
             }
+
+            // write remoteCamera to file
+            glm::vec3 remotePos = remoteCamera.getPosition();
+            glm::vec3 remoteRot = remoteCamera.getRotationEuler();
+            poseFile << static_cast<uint64_t>(now * 1000) << ","
+                            << remotePos.x << "," << remotePos.y << "," << remotePos.z << ","
+                            << remoteRot.x << "," << remoteRot.y << "," << remoteRot.z << std::endl;
+            dumpCameraPoses = true;
+
+            // pop E from Es on the front
+            // if (!Es.empty()) {
+            //     float E = Es.front();
+            //     Es.pop();
+            //     quasar.setViewSphereDiameter(E*2);
+            //     spdlog::info("Set View Sphere Diameter to {}", E);
+            // }
 
             quasar.generateFrame(sendResidualFrame, showNormals, showDepth);
             quasar.sendFrame(-1, sendResidualFrame);
@@ -612,6 +690,16 @@ int main(int argc, char** argv) {
         // Render generated meshes
         // quasar.setDrawState(QuadMesh::DrawState::OPAQUE); // draw opaque quads first
         renderStats = renderer.drawObjects(localScene, camera);
+        // save the camera pose after rendering
+        glm::vec3 predictedPos = camera.getPosition();
+        glm::vec3 predictedRot = camera.getRotationEuler();
+        if (dumpCameraPoses) {
+            cameraPoseFile << static_cast<uint64_t>(now * 1000) << ","
+                 << predictedPos.x << "," << predictedPos.y << "," << predictedPos.z << ","
+                 << predictedRot.x << "," << predictedRot.y << "," << predictedRot.z << std::endl;
+            dumpCameraPoses = false;
+        }
+        
         // quasar.setDrawState(QuadMesh::DrawState::TRANSPARENT); // then draw transparent quads
         // renderStats += renderer.drawObjects(localScene, camera, 0);
 

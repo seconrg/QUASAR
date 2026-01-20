@@ -195,7 +195,7 @@ void QuadMesh::createMeshFromProxies(const QuadSet& quadSet, const glm::vec2& gB
     createQuadMeshShader.memoryBarrier(
         GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
         GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
-
+    glFinish();
     stats.createMeshTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 }
 

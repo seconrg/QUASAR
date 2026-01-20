@@ -55,6 +55,8 @@ int main(int argc, char** argv) {
     args::ValueFlag<float> remoteFOVWideIn(parser, "remote-fov-wide", "Remote camera FOV in degrees for wide fov", {'W', "remote-fov-wide"}, 140.0f);
     args::ValueFlag<int> maxHiddenLayersIn(parser, "layers", "Max hidden layers", {'n', "max-hidden-layers"}, 3);
     args::ValueFlag<float> viewSphereDiameterIn(parser, "view-sphere-diameter", "Size of view sphere in m", {'B', "view-size"}, 0.5f);
+    // args::ValueFlag<std::string> EIn(parser, "E", "Path to E's size for each depth peeling call", {'E', "E-path"}, "");
+    
     try {
         parser.ParseCLI(argc, argv);
     } catch (args::Help) {
@@ -86,6 +88,41 @@ int main(int argc, char** argv) {
     Path outputPath = Path(args::get(outputPathIn)); outputPath.mkdirRecursive();
     Path sceneFile = args::get(sceneFileIn);
     Path cameraPathFile = args::get(cameraPathFileIn);
+
+        
+    // Read E path
+    // Path EPathFile = args::get(EIn);
+    // std::ifstream efile(EPathFile.c_str());
+    // if (!efile.is_open()) {
+    //     spdlog::error("Failed to open E path file: {}", EPathFile.str());
+    //     return -1;
+    // }
+
+    // std::queue<float> Es;
+    // std::string line;
+    // int lineNumber = 0;
+    // while(std::getline(efile, line)) {
+    //     if (line.empty() || line[0] == '#' || lineNumber == 0) {
+    //         lineNumber++;
+    //         continue; // Skip empty lines and comments
+    //     }
+    //     // the delimiter is , so we can have float numbers like 0.5,1.0,1.5
+    //     std::stringstream ss(line);
+    //     std::string token;
+    //     // We only need the second element of each line
+    //     int counter = 0;
+    //     while (std::getline(ss, token, ',')) {
+    //         if (counter == 1) {
+    //             float E = std::stof(token);
+    //             Es.push(E);
+    //             break;
+    //         }
+    //         counter++;
+    //     }
+    //     lineNumber++;
+    // }
+    // efile.close();
+
     int numPoses = args::get(numPosesIn);
 
     uint maxHidLayers = args::get(maxHiddenLayersIn);
@@ -145,6 +182,7 @@ int main(int argc, char** argv) {
     scene.skybox = nullptr;
 
     // Post processing
+    HoleFiller holeFiller;
     Tonemapper tonemapper;
 
     Recorder recorder({
@@ -400,6 +438,14 @@ int main(int argc, char** argv) {
                 }
                 // If we do not have a new pose, just send a new frame with the old pose
             }
+
+            // // pop E from Es on the front
+            // if (!Es.empty()) {
+            //     float E = Es.front();
+            //     Es.pop();
+            //     hybridStreamer.setViewSphereDiameter(E*2);
+            //     spdlog::info("Set View Sphere Diameter to {}", E);
+            // }
 
             // Generate new frame
             hybridStreamer.generateFrame();
