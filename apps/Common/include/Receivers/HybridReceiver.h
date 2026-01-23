@@ -1,85 +1,94 @@
-#ifndef QUASAR_RECEIVER_H
-#define QUASAR_RECEIVER_H
+#ifndef HYBRID_RECEIVER_H
+#define HYBRID_RECEIVER_H
 
 #include <BS_thread_pool/BS_thread_pool.hpp>
 
 #include <Path.h>
 
 #include <CameraPose.h>
+#include <Materials/UnlitMaterial.h>
+
 #include <Quads/QuadSet.h>
 #include <Quads/QuadFrames.h>
 #include <Quads/QuadMesh.h>
 
-#include <Networking/DataReceiverTCP.h>
+#include <Receivers/QuadsReceiver.h>
+#include <Receivers/QUASARReceiver.h>
+
+#include <Primitives/Mesh.h>
 #include <Receivers/VideoTexture.h>
-#include <Codecs/AlphaCodec.h>
+#include <Receivers/BC4DepthVideoTexture.h>
+
+#include <Shaders/Shader.h>
+#include <Shaders/ComputeShader.h>
+#include <Streamers/PoseStreamer.h>
 
 namespace quasar {
 
-class HybridReceiver : public DataReceiverTCP {
+class HybridReceiver : public QUASARReceiver {
 public: 
-    struct Params {
-        uint32_t hiddenLayers;
-        float viewSphereDiameter;
-        float wideFOV;
-    };
-
-    struct Header {
-        pose_id_t poseID;
-        Params params;
-        
-        // Size for depth peeling hidden layers
-        uint32_t cameraSize;
-        uint32_t alphaSize;
-        uint32_t geometrySize;
-
-        // Size for visible layers
-        uint32_t visibleLayerSize;
-        uint32_t visibleLayerWideFovSize;
-
-        size_t getSize() const { return sizeof(Header) + cameraSize + alphaSize + geometrySize + visibleLayerSize + visibleLayerWideFovSize; }
-
-    };
-
-    std::string videoURL;
-    std::string depthAndProxiesURL;
+    std::string videoVisibleURL;
+    std::string videoVisibleWideFovURL;
+    std::string depthVisibleURL;
+    std::string depthVisibleWideFovURL;
 
     uint hiddenLayers;
-    float viewSphereDiameter;
 
-    VideoTexture videoAtlasTexture;
-    Texture alphaAtlasTexture;
+    // visible layer for meshwarp
+    VideoTexture visibleTexture;
+    VideoTexture visibleTextureWideFOV;
+    BC4DepthVideoTexture depthTexture;
+    BC4DepthVideoTexture depthTextureWideFOV;
 
-    HybridReceiver(QuadSet& quadSet, uint hiddenLayers, 
-                   const std::string& videoURL = "", 
-                   const std::string& depthAndProxiesURL = "");
+    bool sync = true;
+    Pose colorFramePose, depthFramePose;
+    pose_id_t poseIdColor = -1, poseIdDepth = -1;
     
-    HybridReceiver(QuadSet& quadSet, uint maxLayers, 
-                   float remoteFOV, float remoteFOVWide, 
-                   const std::string& videoURL = "", 
-                   const std::string& proxiesURL = "");
+    HybridReceiver(
+        const glm::uvec2& remoteGBufferSize, 
+        uint depthFactor,
+        uint vertexGroupSize,
+        QuadSet& quadSet, 
+        uint hiddenLayers, 
+        const std::string& videoAtlasURL, 
+        const std::string& proxiesURL,
+        const std::string& videoVisibleURL,
+        const std::string& depthVisibleURL,
+        const std::string& videoVisibleWideFovURL,
+        const std::string& depthVisibleWideFovURL);
     ~HybridReceiver() = default;
 
-    QuadMesh& getMesh(int layer) { return meshesHidLayer[layer]; }
     PerspectiveCamera& getRemoteCamera() { return remoteCamera; }
 
-    void loadFromMemory(const std::vector<char>& inputData);
+    Mesh& getVisibleMesh() { return visibleMesh; }
+    Mesh& getVisibleMeshWideFOV() { return visibleMeshWideFOV; }
 
+    void recvData(const PoseStreamer& poseStreamer,
+                  double& elapsedTimeColor, 
+                  double& elapsedTimeDepth);
 
     void recvData();
 
+    void updateMesh(bool isWideFOV);
+
 private:
-    QuadSet& quadSet;
+    uint depthFactor;
+    uint vertexGroupSize;
+    glm::uvec2 adjustedSize;
+
     PerspectiveCamera remoteCamera;
     PerspectiveCamera remoteCameraWideFOV;
+    
+    // Meshwarp shader for depth peeling
+    Mesh visibleMesh;
+    Mesh visibleMeshWideFOV;
+    UnlitMaterial visibleMeshMaterial;
+    UnlitMaterial visibleMeshWideFOVMaterial;
 
-    std::vector<QuadMesh> meshesHidLayer;
+    ComputeShader meshFromBC4Shader;
 
 };
 
+} // namespace quasar
 
-}
-
-
-
-#endif // QUASAR_RECEIVER_H
+#endif // HYBRID_RECEIVER_H

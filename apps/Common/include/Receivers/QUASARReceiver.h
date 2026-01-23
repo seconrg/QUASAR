@@ -70,7 +70,7 @@ public:
 
     QuadFrame::FrameType recvData();
 
-private:
+protected:
     QuadSet& quadSet;
     PerspectiveCamera remoteCamera;
     PerspectiveCamera remoteCameraWideFOV;

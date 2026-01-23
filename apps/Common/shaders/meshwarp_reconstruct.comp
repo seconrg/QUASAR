@@ -98,7 +98,7 @@ void main() {
     vec3 bottomRightNDC = viewToNDC3(projection, bottomRightView);
     vec3 topLeftNDC = viewToNDC3(projection, topLeftView);
     vec3 topRightNDC = viewToNDC3(projection, topRightView);
-
+    
     // if (bottomLeftNDC.z < MAX_DEPTH ||
     //     bottomRightNDC.z < MAX_DEPTH ||
     //     topLeftNDC.z < MAX_DEPTH ||
@@ -131,8 +131,6 @@ void main() {
     float dist3 = viewSpaceDepthDistance(bottomLeftView, topLeftView);
     float dist4 = viewSpaceDepthDistance(bottomRightView, topRightView);
     float dist5 = viewSpaceDepthDistance(bottomLeftView, topRightView);
-
-
 
     if (dist2 < depthThreshold && dist3 < depthThreshold && dist5 < depthThreshold) {
         // triangle topLeftIdx, topRightIdx, bottomLeftIdx exists

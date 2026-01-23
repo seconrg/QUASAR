@@ -19,8 +19,12 @@ HybridStreamer::HybridStreamer(
         Scene& localScene,
         PerspectiveCamera& remoteCamera,
         const HybridStreamerCreateParams& params)
-    : videoURL(params.videoURL)
-    , depthAndProxiesURL(params.depthAndProxiesURL)
+    : videoAtlasURL(params.videoAtlasURL)
+    , proxiesURL(params.proxiesURL)
+    , videoURL(params.videoURL)
+    , depthURL(params.depthURL)
+    , videoWideFovURL(params.videoWideFovURL)
+    , depthWideFovURL(params.depthWideFovURL)
     , hiddenLayers(params.hiddenLayers)
     , remoteRendererDP(remoteRendererDP)
     , remoteRenderer(remoteRenderer)
@@ -41,7 +45,7 @@ HybridStreamer::HybridStreamer(
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_NEAREST,
         .magFilter = GL_NEAREST,
-    }, depthAndProxiesURL, params.maxFrameRate)
+    }, depthURL, params.maxFrameRate)
     , depthStreamerWideFOV({
         .width = remoteRenderer.width / params.depthFactor,
         .height = remoteRenderer.height / params.depthFactor,
@@ -52,7 +56,7 @@ HybridStreamer::HybridStreamer(
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_NEAREST,
         .magFilter = GL_NEAREST,
-    }, depthAndProxiesURL, params.maxFrameRate)
+    }, depthWideFovURL, params.maxFrameRate)
     , depthEffect(remoteCamera)
     , videoAtlasStreamerRT({
         .width = 2 * quadSet.getSize().x,
@@ -64,7 +68,7 @@ HybridStreamer::HybridStreamer(
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_NEAREST,
         .magFilter = GL_NEAREST,
-    }, params.videoURL, params.maxFrameRate, params.targetBitRate)
+    }, params.videoAtlasURL, params.maxFrameRate, params.targetBitRate)
     , alphaAtlasRT({
         .width = 2 * quadSet.getSize().x,
         .height = 3 * quadSet.getSize().y,
@@ -98,6 +102,28 @@ HybridStreamer::HybridStreamer(
         .minFilter = GL_LINEAR,
         .magFilter = GL_LINEAR,
     })
+    , visibleVideoStreamerRT({
+        .width = remoteRenderer.width,
+        .height = remoteRenderer.height,
+        .internalFormat = GL_SRGB8_ALPHA8,
+        .format = GL_RGBA,
+        .type = GL_UNSIGNED_BYTE,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+        .minFilter = GL_LINEAR,
+        .magFilter = GL_LINEAR,
+    }, videoURL, params.maxFrameRate, params.targetBitRate)
+    , visibleVideoStreamerWideFOV({
+        .width = remoteRenderer.width,
+        .height = remoteRenderer.height,
+        .internalFormat = GL_SRGB8_ALPHA8,
+        .format = GL_RGBA,
+        .type = GL_UNSIGNED_BYTE,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+        .minFilter = GL_LINEAR,
+        .magFilter = GL_LINEAR,
+    }, videoWideFovURL, params.maxFrameRate, params.targetBitRate)
     , meshFromBC4Shader({
         .computeCodeData = SHADER_COMMON_MESH_FROM_BC4_COMP,
         .computeCodeSize = SHADER_COMMON_MESH_FROM_BC4_COMP_len,
@@ -112,8 +138,6 @@ HybridStreamer::HybridStreamer(
             "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
         }
     })
-    // , visibleMeshMaterial({ .baseColor = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f) })
-    // , visibleMeshWideFOVMaterial({ .baseColor = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f) })
     , visibleMeshMaterial({ .baseColorTexture = &frameRTVisible.colorTexture })
     , visibleMeshWideFOVMaterial({ .baseColorTexture = &frameRTVisibleWideFov.colorTexture })
     , visibleMesh({
@@ -129,7 +153,7 @@ HybridStreamer::HybridStreamer(
         .usage = GL_DYNAMIC_DRAW,
     })
     , alphaCodec(alphaAtlasRT.width, alphaAtlasRT.height)
-    , DataStreamerTCP(params.depthAndProxiesURL)
+    , DataStreamerTCP(params.proxiesURL)
 {
     // Initialize hidden layer resources
     referenceFrames.resize(hiddenLayers);
@@ -222,12 +246,12 @@ HybridStreamer::HybridStreamer(
 
 void HybridStreamer::addMeshesToScene(Scene& localScene) {
     
-    localScene.addChildNode(&visibleMeshWideFOVNode);
-    // add all hidden layers, from farthest to nearest
-    for (int layer = hiddenLayers - 1; layer >=0 ; layer--) {
-        localScene.addChildNode(&nodesHidLayer[layer]);
-        // localScene.addChildNode(&wireframesHidLayer[layer]);
-    }
+    // localScene.addChildNode(&visibleMeshWideFOVNode);
+    // // add all hidden layers, from farthest to nearest
+    // for (int layer = hiddenLayers - 1; layer >=0 ; layer--) {
+    //     localScene.addChildNode(&nodesHidLayer[layer]);
+    //     // localScene.addChildNode(&wireframesHidLayer[layer]);
+    // }
 
     localScene.addChildNode(&visibleMeshNode);
 
@@ -374,6 +398,7 @@ RenderStats HybridStreamer::generateFrame() {
 
     // Copy color and depth to video frames
     tonemapper.enableTonemapping(true);
+    tonemapper.drawToRenderTarget(remoteRenderer, visibleVideoStreamerRT);
     depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerRT);
     stats.totalRenderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
@@ -414,6 +439,7 @@ RenderStats HybridStreamer::generateFrame() {
     tonemapper.enableTonemapping(true);
 
     // render into depthStreamerWideFOV
+    tonemapper.drawToRenderTarget(remoteRenderer, visibleVideoStreamerWideFOV);
     depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerWideFOV);
     depthStreamerWideFOV.generateFrame();
 
@@ -485,27 +511,6 @@ RenderStats HybridStreamer::generateFrame() {
             videoAtlasStreamerRT.width, 
             videoAtlasStreamerRT.height);
     }
-
-    // blit the wide-fov layer, from meshwarp streamer
-    frameRTVisibleWideFov.blit(
-        videoAtlasStreamerRT, 0, 0, 
-        subFrameWidth, 
-        subFrameHeight, 
-        atlasIndex.col, 
-        atlasIndex.row, 
-        atlasIndex.col + subFrameWidth, 
-        atlasIndex.row + subFrameHeight
-    );
-
-    frameRTVisibleWideFov.blit(
-        alphaAtlasRT, 0, 0, 
-        subFrameWidth, 
-        subFrameHeight, 
-        atlasIndex.col, 
-        atlasIndex.row, 
-        atlasIndex.col + subFrameWidth, 
-        atlasIndex.row + subFrameHeight
-    );
     // DEBUGGING WRITING out atlas frames
     // videoAtlasStreamerRT.writeColorAsPNG("video_atlas.png");
     // alphaAtlasRT.writeAlphaAsPNG("alpha_atlas.png");
@@ -514,7 +519,87 @@ RenderStats HybridStreamer::generateFrame() {
 }
 
 void HybridStreamer::sendFrame(pose_id_t poseID) {
+
+    // write alpha atlas and compressed depth offset to memory
+    stats.frameSize = writeToMemory(poseID, compressedData);
     depthStreamerRT.sendFrame(poseID);
+    depthStreamerWideFOV.sendFrame(poseID);
+
+    // send atlas hidden frame
+    if (!videoURL.empty() && !proxiesURL.empty()) {
+        videoAtlasStreamerRT.sendFrame(poseID);
+        send(compressedData);
+    }
+}
+
+size_t HybridStreamer::writeToMemory(pose_id_t poseID, std::vector<char>& outputData) {
+
+    // Save camera data
+    Pose cameraPose;
+    std::vector<char> cameraData;
+    cameraPose.setProjectionMatrix(remoteCamera.getProjectionMatrix());
+    cameraPose.setViewMatrix(remoteCamera.getViewMatrix());
+    cameraPose.writeToMemory(cameraData);
+
+    // Save alpha data
+    alphaAtlasRT.writeAlphaToMemory(uncompressedAlphaData);
+    alphaCodec.compress(uncompressedAlphaData.data(), alphaData, uncompressedAlphaData.size());
+
+    // We only need to save hidden layers here, because visible layer
+    // is streamed through another streamer
+
+    for (int layer = 0; layer < hiddenLayers; layer++) {
+        referenceFrames[layer].writeToMemory(proxyMetadatas[layer]);
+    }
+    uint32_t proxySize = 0;
+    for (const auto& proxyMetadata : proxyMetadatas) {
+        proxySize += sizeof(uint32_t) + static_cast<uint32_t>(proxyMetadata.size());
+    }
+
+    QUASARReceiver::Header header{
+        .poseID = poseID,
+        .frameType = QuadFrame::FrameType::REFERENCE,
+        .params {
+            .numLayers = static_cast<uint32_t>(proxyMetadatas.size()),
+            .viewSphereDiameter = viewSphereDiameter,
+            .wideFOV = remoteCameraWideFOV.getFovyDegrees(),
+        },
+        .cameraSize = static_cast<uint32_t>(cameraData.size()),
+        .alphaSize = static_cast<uint32_t>(alphaData.size()),
+        .geometrySize = proxySize,
+    };
+
+    outputData.resize(header.getSize());
+    char* ptr = outputData.data();
+
+    // Write header
+    std::memcpy(ptr, &header, sizeof(header));
+    ptr += sizeof(header);
+
+    // Write camera data
+    std::memcpy(ptr, cameraData.data(), cameraData.size());
+    ptr += cameraData.size();
+
+    // Write alpha data
+    std::memcpy(ptr, alphaData.data(), alphaData.size());
+    ptr += alphaData.size();
+
+    // Write geometry data
+    for (const auto& layerData : proxyMetadatas) {
+        uint32_t layerSize = static_cast<uint32_t>(layerData.size());
+
+        // Write size of layer
+        std::memcpy(ptr, &layerSize, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
+
+        // Write layer data
+        std::memcpy(ptr, layerData.data(), layerSize);
+        ptr += layerSize;
+    }
+
+    spdlog::info("Total data size: {:.3f}MB", static_cast<float>(outputData.size()) / BYTES_PER_MEGABYTE);
+
+    return outputData.size();
 }
 
 size_t HybridStreamer::writeToFiles(const Path& outputPath) {
@@ -530,4 +615,14 @@ size_t HybridStreamer::writeToFiles(const Path& outputPath) {
     size_t totalBytes = depthStreamerRT.writeToFile(depthFileName);
 
     return totalBytes;
+}
+
+
+uint HybridStreamer::getNumTriangles() const {
+    uint numTriangles = 0; // Each triangle has 3 indices
+    for (const auto& mesh : meshesHidLayer) {
+        auto size = mesh.getBufferSizes();
+        numTriangles += size.numIndices / 3; // Each triangle has 3 indices
+    }
+    return numTriangles;
 }

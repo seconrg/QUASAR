@@ -5,6 +5,7 @@
 #include <DepthMesh.h>
 #include <Quads/FrameGenerator.h>
 #include <Receivers/HybridReceiver.h>
+#include <Receivers/QUASARReceiver.h>
 #include <Renderers/DepthPeelingRenderer.h>
 #include <Networking/DataStreamerTCP.h>
 
@@ -35,8 +36,14 @@ struct HybridStreamerCreateParams {
     // Common params
     uint maxFrameRate = 30;
     uint targetBitRate = 28;
+    std::string videoAtlasURL = "";
+    std::string proxiesURL = "";
+
     std::string videoURL = "";
-    std::string depthAndProxiesURL = "";
+    std::string depthURL = "";
+    
+    std::string videoWideFovURL = "";
+    std::string depthWideFovURL = "";
 
 };
 
@@ -55,12 +62,17 @@ public:
     FrameRenderTarget alphaAtlasRT;
     FrameRenderTarget frameRTVisible;
     FrameRenderTarget frameRTVisibleWideFov;
+    VideoStreamer visibleVideoStreamerRT;
+    VideoStreamer visibleVideoStreamerWideFOV;
 
     struct Stats {
         double totalRenderTimeMs = 0.0;
         double totalGenMeshTime = 0.0;
         double totalCompressTimeMs = 0.0;
         size_t compressedSize = 0;
+        double frameSize = 0.0;
+
+        QuadSet::Sizes proxySizes;
     } stats;
 
     // Hidden Layers
@@ -72,9 +84,15 @@ public:
     std::vector<Node> wireframesHidLayer;
 
     // URLs to stream to and from
+    std::string videoAtlasURL;
+    std::string proxiesURL;
+
     std::string videoURL;
-    std::string depthAndProxiesURL; // for this URL we are not only streaming proxy, but also depth
+    std::string depthURL;
     
+    std::string videoWideFovURL;
+    std::string depthWideFovURL;
+
     struct stats {
         std::vector<double> renderTimeMsByLayer;
         std::vector<double> createProxiesTimeMsByLayer;
@@ -112,6 +130,7 @@ public:
     Mesh& getVisibleMesh() { return visibleMesh; }
     Mesh& getVisibleMeshWideFOV() { return visibleMeshWideFOV; }
 
+    uint getNumTriangles() const;
 private:
     const std::vector<glm::vec4> colors = {
         glm::vec4(1.0f, 1.0f, 0.0f, 1.0f), // primary layer color is yellow
@@ -148,6 +167,12 @@ private:
     AlphaCodec alphaCodec;
 
     std::vector<ReferenceFrame> referenceFrames;
+    
+
+    std::vector<unsigned char> uncompressedAlphaData;
+    std::vector<char> alphaData;
+    std::vector<std::vector<char>> proxyMetadatas;
+    std::vector<char> compressedData;
 
     Tonemapper tonemapper;
     ShowDepthEffect depthEffect;
