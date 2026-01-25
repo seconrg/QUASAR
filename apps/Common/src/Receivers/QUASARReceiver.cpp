@@ -1,3 +1,4 @@
+#include "spdlog/spdlog.h"
 #include <Receivers/QUASARReceiver.h>
 
 using namespace quasar;

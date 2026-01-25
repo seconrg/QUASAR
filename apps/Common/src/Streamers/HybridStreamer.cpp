@@ -45,7 +45,7 @@ HybridStreamer::HybridStreamer(
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_NEAREST,
         .magFilter = GL_NEAREST,
-    }, depthURL, params.maxFrameRate)
+    }, params.depthURL, params.maxFrameRate)
     , depthStreamerWideFOV({
         .width = remoteRenderer.width / params.depthFactor,
         .height = remoteRenderer.height / params.depthFactor,
@@ -56,7 +56,7 @@ HybridStreamer::HybridStreamer(
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_NEAREST,
         .magFilter = GL_NEAREST,
-    }, depthWideFovURL, params.maxFrameRate)
+    }, params.depthWideFovURL, params.maxFrameRate)
     , depthEffect(remoteCamera)
     , videoAtlasStreamerRT({
         .width = 2 * quadSet.getSize().x,
@@ -112,7 +112,7 @@ HybridStreamer::HybridStreamer(
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_LINEAR,
         .magFilter = GL_LINEAR,
-    }, videoURL, params.maxFrameRate, params.targetBitRate)
+    }, params.videoURL, params.maxFrameRate, params.targetBitRate)
     , visibleVideoStreamerWideFOV({
         .width = remoteRenderer.width,
         .height = remoteRenderer.height,
@@ -123,7 +123,7 @@ HybridStreamer::HybridStreamer(
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_LINEAR,
         .magFilter = GL_LINEAR,
-    }, videoWideFovURL, params.maxFrameRate, params.targetBitRate)
+    }, params.videoWideFovURL, params.maxFrameRate, params.targetBitRate)
     , meshFromBC4Shader({
         .computeCodeData = SHADER_COMMON_MESH_FROM_BC4_COMP,
         .computeCodeSize = SHADER_COMMON_MESH_FROM_BC4_COMP_len,
@@ -157,6 +157,7 @@ HybridStreamer::HybridStreamer(
 {
     // Initialize hidden layer resources
     referenceFrames.resize(hiddenLayers);
+    frameRTsHidLayer.reserve(hiddenLayers);
     frameRTsHidLayer_noTone.reserve(hiddenLayers);
 
     meshesHidLayer.reserve(hiddenLayers);
@@ -241,21 +242,24 @@ HybridStreamer::HybridStreamer(
         wideFovScene.addChildNode(&nodesHidLayer[layer]);
     }
     wideFovScene.addChildNode(&visibleMeshNode);
+    
+    proxyMetadatas.resize(hiddenLayers);
+    uncompressedAlphaData.resize(alphaAtlasRT.width * alphaAtlasRT.height);
+
+    spdlog::info("HybridStreamer initialized");
 
 }
 
 void HybridStreamer::addMeshesToScene(Scene& localScene) {
     
-    // localScene.addChildNode(&visibleMeshWideFOVNode);
-    // // add all hidden layers, from farthest to nearest
-    // for (int layer = hiddenLayers - 1; layer >=0 ; layer--) {
-    //     localScene.addChildNode(&nodesHidLayer[layer]);
-    //     // localScene.addChildNode(&wireframesHidLayer[layer]);
-    // }
+    localScene.addChildNode(&visibleMeshWideFOVNode);
+    // add all hidden layers, from farthest to nearest
+    for (int layer = hiddenLayers - 1; layer >=0 ; layer--) {
+        localScene.addChildNode(&nodesHidLayer[layer]);
+        // localScene.addChildNode(&wireframesHidLayer[layer]);
+    }
 
     localScene.addChildNode(&visibleMeshNode);
-
-
     // wideFovScene = localScene; // copy for wide fov rendering
     
 }
@@ -359,14 +363,18 @@ RenderStats HybridStreamer::generateFrame() {
     ============================
     */
     // Render all the objects in the scene
+    spdlog::info("Rendering all the objects in the scene");
     renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
 
+    spdlog::info("Hidden Layer depth Peeling done, total hidden layers: {}", hiddenLayers);
+
     for (int layer = 0; layer < hiddenLayers; layer++) {
-        
+        spdlog::info("Generating hidden layer reference frames for layer {}", layer);
         // Always use the remoteCamera
         auto& renderTargetToUse = frameRTsHidLayer[layer];
         auto& renderTargetToUse_noTone = frameRTsHidLayer_noTone[layer];
         auto& meshToUse = meshesHidLayer[layer];
+        spdlog::info("Blitting hidden layer {} from depth peeling renderer", layer);
         
         // blit the hidden layer from depth peeling renderer
         remoteRendererDP.peelingLayers[layer+1].blit(renderTargetToUse_noTone);
@@ -377,7 +385,7 @@ RenderStats HybridStreamer::generateFrame() {
         Generate hidden layer reference frames
         ============================
         */
-
+        spdlog::info("Generating hidden layer reference frames for layer {} done", layer);
         frameGenerator.createReferenceFrame(
             renderTargetToUse_noTone, 
             remoteCamera, 
@@ -386,6 +394,7 @@ RenderStats HybridStreamer::generateFrame() {
         
         tonemapper.setUniforms(renderTargetToUse_noTone);
         tonemapper.drawToRenderTarget(remoteRenderer, renderTargetToUse, false);
+        
     }
 
     // // Render all objects in scene
@@ -408,6 +417,8 @@ RenderStats HybridStreamer::generateFrame() {
 
     // Reconstruct visible mesh using meshwarp
     reconstructMeshwarp(remoteCamera, visibleMesh, depthStreamerRT);
+
+    spdlog::info("Reconstructing visible mesh using meshwarp done");
 
     /*
     ============================
@@ -443,6 +454,8 @@ RenderStats HybridStreamer::generateFrame() {
     depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerWideFOV);
     depthStreamerWideFOV.generateFrame();
 
+    spdlog::info("Generating wide fov depth map done");
+
     // Reconstruct wide fov visible mesh using meshwarp
     reconstructMeshwarp(remoteCameraWideFOV, visibleMeshWideFOV, depthStreamerWideFOV);
 
@@ -451,6 +464,8 @@ RenderStats HybridStreamer::generateFrame() {
     subFrameIndex atlasIndex = {0, 0};
     uint subFrameWidth = depthStreamerRT.width;
     uint subFrameHeight = depthStreamerRT.height;
+
+    spdlog::info("Blitting the default layer to the atlas");
     
     // blit the default layer, directly from depth peeling renderer
     frameRTVisible.blit(
@@ -514,7 +529,7 @@ RenderStats HybridStreamer::generateFrame() {
     // DEBUGGING WRITING out atlas frames
     // videoAtlasStreamerRT.writeColorAsPNG("video_atlas.png");
     // alphaAtlasRT.writeAlphaAsPNG("alpha_atlas.png");
-
+    spdlog::info("HybridStreamer generated frame");
     return renderStats;
 }
 
@@ -535,6 +550,7 @@ void HybridStreamer::sendFrame(pose_id_t poseID) {
 size_t HybridStreamer::writeToMemory(pose_id_t poseID, std::vector<char>& outputData) {
 
     // Save camera data
+    spdlog::info("Writing camera data to memory");
     Pose cameraPose;
     std::vector<char> cameraData;
     cameraPose.setProjectionMatrix(remoteCamera.getProjectionMatrix());

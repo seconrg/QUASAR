@@ -49,12 +49,12 @@ int main(int argc, char** argv) {
     
     // args related to URL
     args::ValueFlag<std::string> outputPathIn(parser, "output-path", "Directory to save outputs", {'o', "output-path"}, ".");
-    args::ValueFlag<std::string> videoAtlasURLIn(parser, "video", "URL to recv video", {'c', "video-url"}, "0.0.0.0:12345");
-    args::ValueFlag<std::string> videoURLIn(parser, "video", "URL to recv video", {'c', "video-url"}, "0.0.0.0:12346");
+    args::ValueFlag<std::string> videoAtlasURLIn(parser, "video", "URL to recv atlas video", {'c', "video-url"}, "0.0.0.0:12345");
+    args::ValueFlag<std::string> videoURLIn(parser, "video", "URL to recv video", {'x', "video-url"}, "0.0.0.0:12346");
     args::ValueFlag<std::string> videoWideFovURLIn(parser, "video-wide", "URL to recv wide fov video", {'w', "video-wide-url"}, "0.0.0.0:12347");
     args::ValueFlag<std::string> depthURLIn(parser, "depth", "URL to recv depth", {'e', "depth-url"}, "127.0.0.1:65432");
-    args::ValueFlag<std::string> depthWideFovURLIn(parser, "depth-wide", "URL to recv wide fov depth", {'w', "depth-widefov-url"}, "127.0.0.1:65433");
-    args::ValueFlag<std::string> proxiesURLIn(parser, "proxies", "URL to recv quad proxy metadata", {'p', "proxies-url"}, "127.0.0.1:65434");
+    args::ValueFlag<std::string> depthWideFovURLIn(parser, "depth-wide", "URL to recv wide fov depth", {'d', "depth-widefov-url"}, "127.0.0.1:65433");
+    args::ValueFlag<std::string> proxiesURLIn(parser, "proxies", "URL to recv quad proxy metadata", {'s', "proxies-url"}, "127.0.0.1:65434");
     args::ValueFlag<std::string> poseURLIn(parser, "pose", "URL to recv camera pose", {'p', "pose-url"}, "127.0.0.1:54321");
     
     // Add for using camera path information
@@ -143,6 +143,13 @@ int main(int argc, char** argv) {
     
     // Initialize receiver
     QuadSet quadSet(windowSize);
+    spdlog::info("Creating HybridReceiver with proxies url: {}", proxiesURL);
+    spdlog::info("Creating HybridReceiver with video url: {}", videoURL);
+    spdlog::info("Creating HybridReceiver with video wide fov url: {}", videoWideFovURL);
+    spdlog::info("Creating HybridReceiver with depth url: {}", depthURL);
+    spdlog::info("Creating HybridReceiver with depth wide fov url: {}", depthWideFovURL);
+    spdlog::info("Creating HybridReceiver with pose url: {}", poseURL);
+    spdlog::info("Creating HybridReceiver with video atlas url: {}", videoAtlasURL);
     HybridReceiver hybridReceiver(
         remoteWindowSize,
         depthFactor,

@@ -51,13 +51,13 @@ int main(int argc, char** argv) {
 
     // URL config
     args::ValueFlag<std::string> outputPathIn(parser, "output-path", "Directory to save outputs", {'o', "output-path"}, ".");
-    args::ValueFlag<std::string> videoAtlasURLIn(parser, "video", "URL to recv video", {'c', "video-url"}, "0.0.0.0:12345");
-    args::ValueFlag<std::string> videoURLIn(parser, "video", "URL to recv video", {'c', "video-url"}, "0.0.0.0:12346");
-    args::ValueFlag<std::string> videoWideFovURLIn(parser, "video-wide", "URL to recv wide fov video", {'w', "video-wide-url"}, "0.0.0.0:12347");
+    args::ValueFlag<std::string> videoAtlasURLIn(parser, "videoAtlas", "URL to recv video", {'c', "video-url"}, "127.0.0.1:12345");
+    args::ValueFlag<std::string> videoURLIn(parser, "video", "URL to recv video", {'c', "video-url"}, "127.0.0.1:12346");
+    args::ValueFlag<std::string> videoWideFovURLIn(parser, "video-wide", "URL to recv wide fov video", {'w', "video-wide-url"}, "127.0.0.1:12347");
     args::ValueFlag<std::string> depthURLIn(parser, "depth", "URL to recv depth", {'e', "depth-url"}, "127.0.0.1:65432");
     args::ValueFlag<std::string> depthWideFovURLIn(parser, "depth-wide", "URL to recv wide fov depth", {'w', "depth-widefov-url"}, "127.0.0.1:65433");
     args::ValueFlag<std::string> proxiesURLIn(parser, "proxies", "URL to recv quad proxy metadata", {'p', "proxies-url"}, "127.0.0.1:65434");
-    args::ValueFlag<std::string> poseURLIn(parser, "pose", "URL to recv camera pose", {'p', "pose-url"}, "127.0.0.1:54321");
+    args::ValueFlag<std::string> poseURLIn(parser, "pose", "URL to recv camera pose", {'p', "pose-url"}, "0.0.0.0:54321");
     
     // Parse Config
     try {
@@ -91,6 +91,16 @@ int main(int argc, char** argv) {
     std::string poseURL = args::get(poseURLIn);
     std::string proxiesURL = args::get(proxiesURLIn);
 
+    // Print out all the URLs with spdlog::info
+    spdlog::info("Video Atlas URL: {}", videoAtlasURL);
+    spdlog::info("Video URL: {}", videoURL);
+    spdlog::info("Video Wide FOV URL: {}", videoWideFovURL);
+    spdlog::info("Depth URL: {}", depthURL);
+    spdlog::info("Depth Wide FOV URL: {}", depthWideFovURL);
+    spdlog::info("Pose URL: {}", poseURL);
+    spdlog::info("Proxies URL: {}", proxiesURL);
+    spdlog::info("--------------------------------");
+
     uint maxHiddenLayers = args::get(maxHiddenLayersIn);
     uint targetBitrate = args::get(targetBitrateIn);
     uint depthFactor = args::get(depthFactorIn);
@@ -104,7 +114,7 @@ int main(int argc, char** argv) {
 
     OpenGLApp app(config);
     ForwardRenderer renderer(config);
-    DepthPeelingRenderer remoteRendererDP(config, maxHiddenLayers, true);
+    DepthPeelingRenderer remoteRendererDP(config, maxHiddenLayers+1, true);
     DeferredRenderer remoteRenderer(config);
     
     // "Remote" scene
@@ -198,7 +208,6 @@ int main(int argc, char** argv) {
 
         frameRateWindow.draw(now, dt);
         sceneWindow.draw(now, dt);
-
         if (showUI) {
              ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
             ImGui::SetNextWindowPos(ImVec2(10, 90), ImGuiCond_FirstUseEver);
@@ -330,11 +339,11 @@ int main(int argc, char** argv) {
 
     double totalDT = 0.0;
     double lastRenderTime = -INFINITY;
+    int frameCounter = 0;
 
     app.onRender([&](double now, double dt) {
         
         // Handle Keyboard input
-
         auto keys = window->getKeys();
         if (keys.ESC_PRESSED) {
             window->close();
@@ -384,4 +393,9 @@ int main(int argc, char** argv) {
         }
 
     });
+
+    // Run app loop (blocking)
+    app.run();
+
+    return 0;
 }
