@@ -86,6 +86,7 @@ private:
     UnlitMaterial visibleMeshWideFOVMaterial;
 
     ComputeShader meshFromBC4Shader;
+    ComputeShader meshWarpReconstructShader;
 
 };
 

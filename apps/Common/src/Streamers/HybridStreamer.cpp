@@ -366,15 +366,11 @@ RenderStats HybridStreamer::generateFrame() {
     spdlog::info("Rendering all the objects in the scene");
     renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
 
-    spdlog::info("Hidden Layer depth Peeling done, total hidden layers: {}", hiddenLayers);
-
     for (int layer = 0; layer < hiddenLayers; layer++) {
-        spdlog::info("Generating hidden layer reference frames for layer {}", layer);
         // Always use the remoteCamera
         auto& renderTargetToUse = frameRTsHidLayer[layer];
         auto& renderTargetToUse_noTone = frameRTsHidLayer_noTone[layer];
         auto& meshToUse = meshesHidLayer[layer];
-        spdlog::info("Blitting hidden layer {} from depth peeling renderer", layer);
         
         // blit the hidden layer from depth peeling renderer
         remoteRendererDP.peelingLayers[layer+1].blit(renderTargetToUse_noTone);
@@ -385,7 +381,6 @@ RenderStats HybridStreamer::generateFrame() {
         Generate hidden layer reference frames
         ============================
         */
-        spdlog::info("Generating hidden layer reference frames for layer {} done", layer);
         frameGenerator.createReferenceFrame(
             renderTargetToUse_noTone, 
             remoteCamera, 

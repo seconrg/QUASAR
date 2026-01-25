@@ -81,6 +81,13 @@ HybridReceiver::HybridReceiver(
             "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
         }
     })
+    , meshWarpReconstructShader({
+        .computeCodeData = SHADER_COMMON_MESHWARP_RECONSTRUCT_COMP,
+        .computeCodeSize = SHADER_COMMON_MESHWARP_RECONSTRUCT_COMP_len,
+        .defines = {
+            "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
+        }
+    })
     , visibleMeshMaterial({ .baseColorTexture = &visibleTexture })
     , visibleMesh({
         .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1),
@@ -131,6 +138,27 @@ void HybridReceiver::updateMesh(bool isWideFOV) {
     meshFromBC4Shader.dispatch(((adjustedSize.x + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
                                ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
     meshFromBC4Shader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
+                                    GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
+    
+    
+    meshWarpReconstructShader.bind();
+    {
+        meshWarpReconstructShader.setMat4("projection", cameraInUse.getProjectionMatrix());
+        meshWarpReconstructShader.setMat4("view", cameraInUse.getViewMatrix());
+        meshWarpReconstructShader.setFloat("near", cameraInUse.getNear());
+        meshWarpReconstructShader.setFloat("far", cameraInUse.getFar());
+    }
+    {
+        meshWarpReconstructShader.setFloat("depthThreshold", 0.05f);
+    }
+    {
+        meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, meshInUse.vertexBuffer);
+        meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, meshInUse.indexBuffer);
+    }
+
+    meshWarpReconstructShader.dispatch(((adjustedSize.x + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
+                                        ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
+    meshWarpReconstructShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
                                     GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
 }
 
