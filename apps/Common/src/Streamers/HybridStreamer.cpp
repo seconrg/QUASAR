@@ -399,6 +399,8 @@ RenderStats HybridStreamer::generateFrame() {
     // Copy to intermediate render target
     tonemapper.enableTonemapping(false);
     tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisible);
+    // // writeback the frameRTVisible to file
+    // frameRTVisible.writeColorAsPNG("frameRTVisible.png");
 
     // Copy color and depth to video frames
     tonemapper.enableTonemapping(true);
@@ -532,6 +534,10 @@ void HybridStreamer::sendFrame(pose_id_t poseID) {
 
     // write alpha atlas and compressed depth offset to memory
     stats.frameSize = writeToMemory(poseID, compressedData);
+
+    visibleVideoStreamerRT.sendFrame(poseID);
+    visibleVideoStreamerWideFOV.sendFrame(poseID);
+
     depthStreamerRT.sendFrame(poseID);
     depthStreamerWideFOV.sendFrame(poseID);
 

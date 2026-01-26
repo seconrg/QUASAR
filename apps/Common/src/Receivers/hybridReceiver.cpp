@@ -28,8 +28,6 @@ HybridReceiver::HybridReceiver(
     , depthVisibleURL(depthVisibleURL)
     , videoVisibleWideFovURL(videoVisibleWideFovURL)
     , depthVisibleWideFovURL(depthVisibleWideFovURL)
-    , remoteCamera(quadSet.getSize())
-    , remoteCameraWideFOV(quadSet.getSize())
     , visibleTexture({
         .width = quadSet.getSize().x,
         .height = quadSet.getSize().y,
@@ -110,6 +108,11 @@ HybridReceiver::HybridReceiver(
     meshFromBC4Shader.setVec2("depthMapSize", glm::vec2(depthTexture.width, depthTexture.height));
     meshFromBC4Shader.setUint("vertexGroupSize", vertexGroupSize);
 
+    meshWarpReconstructShader.bind();
+    meshWarpReconstructShader.setBool("unlinearizeDepth", true);
+    meshWarpReconstructShader.setVec2("depthMapSize", glm::vec2(depthTexture.width, depthTexture.height));
+    meshWarpReconstructShader.setUint("vertexGroupSize", vertexGroupSize);
+
 }
 
 void HybridReceiver::updateMesh(bool isWideFOV) {
@@ -118,6 +121,20 @@ void HybridReceiver::updateMesh(bool isWideFOV) {
     PerspectiveCamera& cameraInUse = isWideFOV ? remoteCameraWideFOV : remoteCamera;
     Mesh& meshInUse = isWideFOV ? visibleMeshWideFOV : visibleMesh;
     BC4DepthVideoTexture& depthTextureInUse = isWideFOV ? depthTextureWideFOV : depthTexture;
+    if (isWideFOV) {
+        spdlog::info("Updating visible wide fov mesh");
+        visibleTextureWideFOV.bind();
+        poseIdColor = visibleTextureWideFOV.draw();
+        depthTextureWideFOV.bind();
+        poseIdDepth = depthTextureWideFOV.draw();
+
+    } else {
+        spdlog::info("Updating visible mesh");
+        visibleTexture.bind();
+        poseIdColor = visibleTexture.draw();
+        depthTexture.bind();
+        poseIdDepth = depthTexture.draw();
+    }
 
     meshFromBC4Shader.bind();
     {
@@ -168,22 +185,13 @@ void HybridReceiver::recvData(
         double& elapsedTimeColor, 
         double& elapsedTimeDepth) {
 
-    // Render depth video frame
-    depthTexture.bind();
-    if (sync) {
-        poseIdDepth = depthTexture.draw(poseIdColor);
-    }
-    else {
-        poseIdDepth = depthTexture.draw();
-    }
-
     // Get poses for the frames
     poseStreamer.getPose(poseIdColor, &colorFramePose, &elapsedTimeColor);
     poseStreamer.getPose(poseIdDepth, &depthFramePose, &elapsedTimeDepth);
 
     // Update both visible and wide FOV meshes
-    updateMesh(false);
     updateMesh(true);
+    updateMesh(false);
 
     // Wait for a frame that has been written to
     std::shared_ptr<Frame> frame;

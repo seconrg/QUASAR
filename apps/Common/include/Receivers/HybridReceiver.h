@@ -76,8 +76,8 @@ private:
     uint vertexGroupSize;
     glm::uvec2 adjustedSize;
 
-    PerspectiveCamera remoteCamera;
-    PerspectiveCamera remoteCameraWideFOV;
+    // PerspectiveCamera remoteCamera;
+    // PerspectiveCamera remoteCameraWideFOV;
     
     // Meshwarp shader for depth peeling
     Mesh visibleMesh;

@@ -167,18 +167,21 @@ int main(int argc, char** argv) {
 
     // add in reverse order to have correct layering
     Node wideFovNode(&hybridReceiver.getVisibleMeshWideFOV());
-    wideFovNode.frustumCulled = false;
-    scene.addChildNode(&wideFovNode);
-
     std::vector<Node> refNodes(hiddenLayers);
+    Node visibleNode(&hybridReceiver.getVisibleMesh());
+
+    // wideFovNode.frustumCulled = false;
+    // visibleNode.frustumCulled = false;
+    // // wideFovNode.primitiveType = GL_TRIANGLES;
+    // scene.addChildNode(&wideFovNode);
+    
     for (int i = hiddenLayers - 1; i >= 0; --i) {
         refNodes[i].addEntity(&hybridReceiver.getMesh(i));
         refNodes[i].frustumCulled = false;
         scene.addChildNode(&refNodes[i]);
     }
 
-    Node visibleNode(&hybridReceiver.getVisibleMesh());
-    visibleNode.frustumCulled = false;
+    // visibleNode.primitiveType = GL_TRIANGLES;
     scene.addChildNode(&visibleNode);
 
     // setup visible layer toggles
@@ -393,10 +396,9 @@ int main(int argc, char** argv) {
         }
 
         // Send pose to streamer
-        pose_id_t currPoseID = poseStreamer.sendPose();
-        poseStreamer.removePosesLessThan(currPoseID);
-
+        poseStreamer.sendPose();
         hybridReceiver.recvData(poseStreamer, elapsedTimeColor, elapsedTimeDepth);
+        poseStreamer.removePosesLessThan(std::min(hybridReceiver.poseIdColor, hybridReceiver.poseIdDepth));
         
         visibleNode.visible = showVisibleLayer;
         wideFovNode.visible = showWideFovLayer;
@@ -412,3 +414,7 @@ int main(int argc, char** argv) {
     return 0;
 
 }
+
+
+// 6324480
+// 37635840

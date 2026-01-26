@@ -379,6 +379,12 @@ int main(int argc, char** argv) {
                 prevPoseID = poseID;
 
                 // TODO: dump out related information here
+
+                // Offset camera
+                remoteCamera.setPosition(remoteCamera.getPosition() + initialPosition);
+                remoteCamera.updateViewMatrix();
+                // Render genereated meshes
+                renderer.drawObjects(localScene, remoteCamera);
             }
 
             sendFrame = false;

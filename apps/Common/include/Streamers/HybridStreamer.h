@@ -64,6 +64,8 @@ public:
     FrameRenderTarget frameRTVisibleWideFov;
     VideoStreamer visibleVideoStreamerRT;
     VideoStreamer visibleVideoStreamerWideFOV;
+    BC4DepthStreamer depthStreamerRT;
+    BC4DepthStreamer depthStreamerWideFOV;
 
     struct Stats {
         double totalRenderTimeMs = 0.0;
@@ -177,9 +179,6 @@ private:
     Tonemapper tonemapper;
     ShowDepthEffect depthEffect;
     ShowNormalsEffect showNormalsEffect;
-
-    BC4DepthStreamer depthStreamerRT;
-    BC4DepthStreamer depthStreamerWideFOV;
 
     /* Information used for local debugging and simulation*/
     ComputeShader meshFromBC4Shader;
