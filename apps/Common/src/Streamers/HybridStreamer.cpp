@@ -16,7 +16,6 @@ HybridStreamer::HybridStreamer(
         DepthPeelingRenderer& remoteRendererDP,
         DeferredRenderer& remoteRenderer, 
         Scene& remoteScene,
-        Scene& localScene,
         PerspectiveCamera& remoteCamera,
         const HybridStreamerCreateParams& params)
     : videoAtlasURL(params.videoAtlasURL)
@@ -29,7 +28,6 @@ HybridStreamer::HybridStreamer(
     , remoteRendererDP(remoteRendererDP)
     , remoteRenderer(remoteRenderer)
     , remoteScene(remoteScene)
-    , localScene(localScene)
     , remoteCamera(remoteCamera)
     , adjustedSize(glm::uvec2(remoteRenderer.width, remoteRenderer.height) / params.vertexGroupSize)
     , depthMapSize(glm::uvec2(remoteRenderer.width, remoteRenderer.height) / params.depthFactor)
@@ -163,7 +161,6 @@ HybridStreamer::HybridStreamer(
     meshesHidLayer.reserve(hiddenLayers);
     nodesHidLayer.reserve(hiddenLayers);
     wireframesHidLayer.reserve(hiddenLayers);
-    
     
     RenderTargetCreateParams rtParams = {
         .width = quadSet.getSize().x,
@@ -350,9 +347,12 @@ void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, 
                                     GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
     nvtxRangePop();
 
+    glFinish();
+
 }
 
 RenderStats HybridStreamer::generateFrame() {
+    frameID++;
     // Reset stats
     stats = { 0 };
     RenderStats renderStats;
@@ -363,7 +363,6 @@ RenderStats HybridStreamer::generateFrame() {
     ============================
     */
     // Render all the objects in the scene
-    spdlog::info("Rendering all the objects in the scene");
     renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
 
     for (int layer = 0; layer < hiddenLayers; layer++) {
@@ -392,7 +391,7 @@ RenderStats HybridStreamer::generateFrame() {
         
     }
 
-    // // Render all objects in scene
+    // Render all objects in scene
     double startTime = timeutils::getTimeMicros();
     renderStats = remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCamera);
 
@@ -451,9 +450,9 @@ RenderStats HybridStreamer::generateFrame() {
     depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerWideFOV);
     depthStreamerWideFOV.generateFrame();
 
-    spdlog::info("Generating wide fov depth map done");
+    // spdlog::info("Generating wide fov depth map done");
 
-    // Reconstruct wide fov visible mesh using meshwarp
+    // // Reconstruct wide fov visible mesh using meshwarp
     reconstructMeshwarp(remoteCameraWideFOV, visibleMeshWideFOV, depthStreamerWideFOV);
 
     // depthStreamerWideFOV.writeColorAsPNG("debug_depth_widefov.png");
@@ -463,35 +462,6 @@ RenderStats HybridStreamer::generateFrame() {
     uint subFrameHeight = depthStreamerRT.height;
 
     spdlog::info("Blitting the default layer to the atlas");
-    
-    // blit the default layer, directly from depth peeling renderer
-    frameRTVisible.blit(
-        videoAtlasStreamerRT, 0, 0, 
-        subFrameWidth, 
-        subFrameHeight, 
-        atlasIndex.col, 
-        atlasIndex.row, 
-        atlasIndex.col + subFrameWidth, 
-        atlasIndex.row + subFrameHeight
-    );
-
-    frameRTVisible.blit(
-        alphaAtlasRT, 0, 0, 
-        subFrameWidth, 
-        subFrameHeight, 
-        atlasIndex.col, 
-        atlasIndex.row, 
-        atlasIndex.col + subFrameWidth, 
-        atlasIndex.row + subFrameHeight
-    );
-
-    atlasIndex = getNextSubFrameIndex(
-        atlasIndex.row, 
-        atlasIndex.col, 
-        subFrameWidth, 
-        subFrameHeight, 
-        videoAtlasStreamerRT.width, 
-        videoAtlasStreamerRT.height);
     
     // blit the hidden layers
     for (int i=0; i< hiddenLayers; i++) {
@@ -614,7 +584,7 @@ size_t HybridStreamer::writeToMemory(pose_id_t poseID, std::vector<char>& output
         ptr += layerSize;
     }
 
-    spdlog::info("Total data size: {:.3f}MB", static_cast<float>(outputData.size()) / BYTES_PER_MEGABYTE);
+    spdlog::info("Total data size: {}", outputData.size());
 
     return outputData.size();
 }

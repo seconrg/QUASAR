@@ -71,13 +71,14 @@ public:
 
     void updateMesh(bool isWideFOV);
 
+    QuadFrame::FrameType loadFromMemory(const std::vector<char>& inputData) override;
+    void reconstructHiddenLayers(std::shared_ptr<Frame> frame);
+
+
 private:
     uint depthFactor;
     uint vertexGroupSize;
     glm::uvec2 adjustedSize;
-
-    // PerspectiveCamera remoteCamera;
-    // PerspectiveCamera remoteCameraWideFOV;
     
     // Meshwarp shader for depth peeling
     Mesh visibleMesh;

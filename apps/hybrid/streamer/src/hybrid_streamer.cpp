@@ -30,6 +30,7 @@ int main(int argc, char** argv) {
     Config config{};
     config.title = "Hybrid Streamer";
     config.targetFramerate = 30;
+    config.sortTransparent = false;
 
     args::ArgumentParser parser(config.title);
     args::HelpFlag help(parser, "help", "Display this help menu", {'h', "help"});
@@ -51,13 +52,13 @@ int main(int argc, char** argv) {
 
     // URL config
     args::ValueFlag<std::string> outputPathIn(parser, "output-path", "Directory to save outputs", {'o', "output-path"}, ".");
-    args::ValueFlag<std::string> videoAtlasURLIn(parser, "videoAtlas", "URL to recv video", {'c', "video-url"}, "127.0.0.1:12345");
-    args::ValueFlag<std::string> videoURLIn(parser, "video", "URL to recv video", {'c', "video-url"}, "127.0.0.1:12346");
-    args::ValueFlag<std::string> videoWideFovURLIn(parser, "video-wide", "URL to recv wide fov video", {'w', "video-wide-url"}, "127.0.0.1:12347");
-    args::ValueFlag<std::string> depthURLIn(parser, "depth", "URL to recv depth", {'e', "depth-url"}, "127.0.0.1:65432");
-    args::ValueFlag<std::string> depthWideFovURLIn(parser, "depth-wide", "URL to recv wide fov depth", {'w', "depth-widefov-url"}, "127.0.0.1:65433");
-    args::ValueFlag<std::string> proxiesURLIn(parser, "proxies", "URL to recv quad proxy metadata", {'p', "proxies-url"}, "127.0.0.1:65434");
-    args::ValueFlag<std::string> poseURLIn(parser, "pose", "URL to recv camera pose", {'p', "pose-url"}, "0.0.0.0:54321");
+    args::ValueFlag<std::string> videoAtlasURLIn(parser, "videoAtlas", "URL to recv video", {'c', "video-atlas-url"}, "127.0.0.1:12345");
+    args::ValueFlag<std::string> videoURLIn(parser, "video", "URL to recv video", {"cv", "video-url"}, "127.0.0.1:12346");
+    args::ValueFlag<std::string> videoWideFovURLIn(parser, "video-wide", "URL to recv wide fov video", {"cw", "video-wide-url"}, "127.0.0.1:12347");
+    args::ValueFlag<std::string> depthURLIn(parser, "depth", "URL to recv depth", {"de", "depth-url"}, "127.0.0.1:65432");
+    args::ValueFlag<std::string> depthWideFovURLIn(parser, "depth-wide", "URL to recv wide fov depth", {"we", "depth-widefov-url"}, "127.0.0.1:65433");
+    args::ValueFlag<std::string> proxiesURLIn(parser, "proxies", "URL to recv quad proxy metadata", {"px", "proxies-url"}, "127.0.0.1:65434");
+    args::ValueFlag<std::string> poseURLIn(parser, "pose", "URL to recv camera pose", {"po", "pose-url"}, "0.0.0.0:54321");
     
     // Parse Config
     try {
@@ -139,8 +140,7 @@ int main(int argc, char** argv) {
         quadSet, 
         remoteRendererDP, 
         remoteRenderer, 
-        remoteScene,
-        localScene,
+        remoteScene,    
         remoteCamera, 
         {
             .hiddenLayers = maxHiddenLayers, 
@@ -332,6 +332,7 @@ int main(int argc, char** argv) {
 
     app.onResize([&](uint width, uint height) {
         windowSize = glm::uvec2(width, height);
+        remoteRendererDP.setWindowSize(windowSize.x, windowSize.y);
         renderer.setWindowSize(windowSize.x, windowSize.y);
         remoteCamera.setAspect(windowSize);
         remoteCamera.updateProjectionMatrix();
@@ -355,7 +356,7 @@ int main(int argc, char** argv) {
         }
 
         if (sendFrame) {
-            localScene.updateAnimations(totalDT);
+            remoteScene.updateAnimations(totalDT);
             totalDT = 0.0;
             lastRenderTime = now;
 
@@ -369,26 +370,32 @@ int main(int argc, char** argv) {
 
                 renderStats = hybridStreamer.generateFrame();
 
-                hybridStreamer.sendFrame(poseID);
-
                 // Restore camera position
                 remoteCamera.setPosition(remoteCamera.getPosition() - initialPosition);
                 remoteCamera.updateViewMatrix();
 
-                // Send video and depth frames
+                hybridStreamer.sendFrame(poseID);
                 prevPoseID = poseID;
-
-                // TODO: dump out related information here
-
-                // Offset camera
-                remoteCamera.setPosition(remoteCamera.getPosition() + initialPosition);
-                remoteCamera.updateViewMatrix();
-                // Render genereated meshes
-                renderer.drawObjects(localScene, remoteCamera);
             }
 
             sendFrame = false;
         }
+
+        // Offset camera
+        remoteCamera.setPosition(remoteCamera.getPosition() + initialPosition);
+        remoteCamera.updateViewMatrix();
+
+        spdlog::info("Draw scene with camera pose: {}, {}, {}", remoteCamera.getPosition().x, remoteCamera.getPosition().y, remoteCamera.getPosition().z);
+        spdlog::info("Draw scene with camera rotation: {}, {}, {}", remoteCamera.getRotationEuler().x, remoteCamera.getRotationEuler().y, remoteCamera.getRotationEuler().z);
+        spdlog::info("Draw scene with camera fovy: {}", remoteCamera.getFovyDegrees());
+        spdlog::info("--------------------------------");
+
+        // Render genereated meshes
+        renderer.drawObjects(localScene, remoteCamera);
+
+        // Restore camera position
+        remoteCamera.setPosition(remoteCamera.getPosition() - initialPosition);
+        remoteCamera.updateViewMatrix();
 
         // Render to screen
         if (config.showWindow) {

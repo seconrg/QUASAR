@@ -42,14 +42,13 @@ int main(int argc, char** argv) {
     args::ValueFlag<std::string> dataPathIn(parser, "data-path", "Path to data files", {'D', "data-path"}, "../simulator/");
     args::ValueFlag<uint> vertexGroupSizeIn(parser, "vertex", "Size of vertex grouping", {'g', "vertex-group-size"}, 1);
     args::ValueFlag<uint> depthFactorIn(parser, "factor", "Depth Resolution Factor", {'a', "depth-factor"}, 1);
-    args::ValueFlag<float> remoteFOVIn(parser, "remote-fov", "Remote field of view", {'f', "remote-fov"}, 80.0f);
-    
+    args::ValueFlag<float> remoteFOVIn(parser, "remote-fov", "Remote field of view", {'f', "remote-fov"}, 80.0f); 
 
     args::ValueFlag<int> maxHiddenLayersIn(parser, "layers", "Max hidden layers", {'n', "max-hidden-layers"}, 3);
     
     // args related to URL
     args::ValueFlag<std::string> outputPathIn(parser, "output-path", "Directory to save outputs", {'o', "output-path"}, ".");
-    args::ValueFlag<std::string> videoAtlasURLIn(parser, "video", "URL to recv atlas video", {'c', "video-url"}, "0.0.0.0:12345");
+    args::ValueFlag<std::string> videoAtlasURLIn(parser, "video", "URL to recv atlas video", {'c', "video-atlas-url"}, "0.0.0.0:12345");
     args::ValueFlag<std::string> videoURLIn(parser, "video", "URL to recv video", {'x', "video-url"}, "0.0.0.0:12346");
     args::ValueFlag<std::string> videoWideFovURLIn(parser, "video-wide", "URL to recv wide fov video", {'w', "video-wide-url"}, "0.0.0.0:12347");
     args::ValueFlag<std::string> depthURLIn(parser, "depth", "URL to recv depth", {'e', "depth-url"}, "127.0.0.1:65432");
@@ -85,7 +84,8 @@ int main(int argc, char** argv) {
     pos = rsizeStr.find('x');
     glm::uvec2 remoteWindowSize = glm::uvec2(std::stoi(rsizeStr.substr(0, pos)), std::stoi(rsizeStr.substr(pos + 1)));
 
-    config.enableVSync = !args::get(novsync);
+    config.enableVSync = !args::get(novsync) && !saveImages;
+    config.showWindow = !args::get(saveImages);
     
     // Parse URL for streaming
     Path dataPath = Path(args::get(dataPathIn));
@@ -134,6 +134,12 @@ int main(int argc, char** argv) {
     }, renderer, holeFiller, outputPath, config.targetFramerate);
     CameraAnimator cameraAnimator(cameraPathFile, -1);
 
+    if (saveImages) {
+        recorder.setTargetFrameRate(-1 /* unlimited */);
+        recorder.setFormat(Recorder::OutputFormat::PNG);
+        recorder.start();
+    }
+
     if (cameraPathFileIn) {
         cameraAnimator.copyPoseToCamera(camera);
     }
@@ -170,10 +176,8 @@ int main(int argc, char** argv) {
     std::vector<Node> refNodes(hiddenLayers);
     Node visibleNode(&hybridReceiver.getVisibleMesh());
 
-    // wideFovNode.frustumCulled = false;
-    // visibleNode.frustumCulled = false;
-    // // wideFovNode.primitiveType = GL_TRIANGLES;
-    // scene.addChildNode(&wideFovNode);
+    wideFovNode.frustumCulled = false;
+    scene.addChildNode(&wideFovNode);
     
     for (int i = hiddenLayers - 1; i >= 0; --i) {
         refNodes[i].addEntity(&hybridReceiver.getMesh(i));
@@ -182,6 +186,7 @@ int main(int argc, char** argv) {
     }
 
     // visibleNode.primitiveType = GL_TRIANGLES;
+    visibleNode.frustumCulled = false;
     scene.addChildNode(&visibleNode);
 
     // setup visible layer toggles
@@ -405,7 +410,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < hiddenLayers; i++) {
             refNodes[i].visible = showLayers[i];
         }
-
+        
         renderStats = renderer.drawObjects(scene, camera);
         holeFiller.drawToScreen(renderer);
     }); 

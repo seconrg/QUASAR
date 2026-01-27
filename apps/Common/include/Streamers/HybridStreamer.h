@@ -103,12 +103,13 @@ public:
         double frameSize = 0.0;
     };
 
+    int frameID = 0;
+
     HybridStreamer(
         QuadSet& quadSet,
         DepthPeelingRenderer& remoteRendererDP,
         DeferredRenderer& remoteRenderer, 
         Scene& remoteScene,
-        Scene& localScene,
         PerspectiveCamera& remoteCamera,
         const HybridStreamerCreateParams& params = {});
 
@@ -131,6 +132,8 @@ public:
 
     Mesh& getVisibleMesh() { return visibleMesh; }
     Mesh& getVisibleMeshWideFOV() { return visibleMeshWideFOV; }
+
+    QuadFrame::FrameType writeToMemory(pose_id_t poseID, bool writeResidualFrame, std::vector<char>& outputData);
 
     uint getNumTriangles() const;
 private:
@@ -157,7 +160,6 @@ private:
     DeferredRenderer& remoteRenderer;
 
     Scene& remoteScene;
-    Scene& localScene;
     
     PerspectiveCamera& remoteCamera;
     PerspectiveCamera remoteCameraWideFOV;

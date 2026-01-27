@@ -230,7 +230,6 @@ void VideoTexture::receiveFrame() {
                 std::memcpy(frame.buffer.data(), map.data, map.size);
                 frames.push_back(std::move(frame));
 
-                spdlog::info("Frame {} added to queue, size: {}", frame.poseID, frame.buffer.size());
                 // dump the frame as png to
                 // std::string filename = "frame_" + std::to_string(frame.poseID) + ".png";
                 // FileIO::writeToPNG(filename, videoWidth, videoHeight, 3, frame.buffer.data());
@@ -242,7 +241,7 @@ void VideoTexture::receiveFrame() {
                 frame.buffer.resize(map.size);
                 std::memcpy(frame.buffer.data(), map.data, map.size);
                 frames.push_back(std::move(frame));
-                spdlog::info("Frame {} added to queue without popping, size: {}", frame.poseID, frame.buffer.size());
+
             }
 
             

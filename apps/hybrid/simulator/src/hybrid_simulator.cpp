@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
 
     HybridStreamer hybridStreamer(
         quadSet,
-        remoteRendererDP, remoteRenderer, remoteScene, scene, remoteCamera,
+        remoteRendererDP, remoteRenderer, remoteScene, remoteCamera,
         {
             .hiddenLayers = maxHidLayers,
             .viewSphereDiameter = viewSphereDiameter,
@@ -469,16 +469,16 @@ int main(int argc, char** argv) {
 
         // Render generated meshes
         // This is using information from the new camera
-        spdlog::info("Drawing local scene with {} objects", scene.children.size());
+        // spdlog::info("Drawing local scene with {} objects", scene.children.size());
 
-        for (int childid = 0; childid < scene.children.size(); childid++) {
-            Node* node = scene.children[childid];
-            Mesh *mesh = dynamic_cast<Mesh*>(node->entities[0]);
-            // spdlog::info("   The number of textures is {}", mesh->getMaterial()->getTextureCount());
-            // mesh->getMaterial()->writeTextureToFile(0, "mesh_" + std::to_string(childid) + ".png");
-            spdlog::info("  Mesh {}: {} triangles", childid, mesh->indexBuffer.getSize()/3);
-        }
-        // camera.setFovyDegrees(140.0f); // Use wide fov for local rendering
+        // for (int childid = 0; childid < scene.children.size(); childid++) {
+        //     Node* node = scene.children[childid];
+        //     Mesh *mesh = dynamic_cast<Mesh*>(node->entities[0]);
+        //     // spdlog::info("   The number of textures is {}", mesh->getMaterial()->getTextureCount());
+        //     // mesh->getMaterial()->writeTextureToFile(0, "mesh_" + std::to_string(childid) + ".png");
+        //     spdlog::info("  Mesh {}: {} triangles", childid, mesh->indexBuffer.getSize()/3);
+        // }
+        // // camera.setFovyDegrees(140.0f); // Use wide fov for local rendering
         renderStats = renderer.drawObjects(scene, camera);
 
         tonemapper.drawToScreen(renderer);

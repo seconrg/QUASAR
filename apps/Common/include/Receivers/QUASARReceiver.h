@@ -66,7 +66,7 @@ public:
     void setViewSphereDiameter(float viewSphereDiameter) { this->viewSphereDiameter = viewSphereDiameter; }
 
     QuadFrame::FrameType loadFromFiles(const Path& dataPath);
-    QuadFrame::FrameType loadFromMemory(const std::vector<char>& inputData);
+    virtual QuadFrame::FrameType loadFromMemory(const std::vector<char>& inputData);
 
     QuadFrame::FrameType recvData();
 

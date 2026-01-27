@@ -44,11 +44,16 @@ int main(int argc, char** argv) {
     args::Flag novsync(parser, "novsync", "Disable VSync", {'V', "novsync"}, false);
     args::Flag loadFromDisk(parser, "load-from-disk", "Load data from disk", {'L', "load-from-disk"}, false);
     args::ValueFlag<int> maxHiddenLayersIn(parser, "layers", "Max hidden layers", {'n', "max-hidden-layers"}, 3);
+    
     args::ValueFlag<std::string> dataPathIn(parser, "data-path", "Path to data files", {'D', "data-path"}, "../simulator/");
     args::ValueFlag<std::string> outputPathIn(parser, "output-path", "Path to output files", {'O', "output-path"}, ".");
     args::ValueFlag<std::string> videoURLIn(parser, "video", "URL to recv video", {'c', "video-url"}, "0.0.0.0:12345");
     args::ValueFlag<std::string> proxiesURLIn(parser, "proxies", "URL to recv quad proxy metadata", {'e', "proxies-url"}, "127.0.0.1:65432");
     args::ValueFlag<std::string> poseURLIn(parser, "pose", "URL to recv camera pose", {'p', "pose-url"}, "127.0.0.1:54321");
+    
+    // Add for using camera path information
+    args::Flag saveImages(parser, "save", "Save outputs to disk", {'I', "save-images"});
+    args::ValueFlag<std::string> cameraPathFileIn(parser, "camera-path", "Path to camera animation file", {'C', "camera-path"});
     try {
         parser.ParseCLI(argc, argv);
     } catch (args::Help) {
@@ -106,6 +111,19 @@ int main(int argc, char** argv) {
         .minFilter = GL_LINEAR,
         .magFilter = GL_LINEAR,
     }, renderer, tonemapper, dataPath, config.targetFramerate);
+
+    Path cameraPathFile = args::get(cameraPathFileIn);
+    
+    CameraAnimator cameraAnimator(cameraPathFile, -1);
+    if (saveImages) {
+        recorder.setTargetFrameRate(-1 /* unlimited */);
+        recorder.setFormat(Recorder::OutputFormat::PNG);
+        recorder.start();
+    }
+
+    if (cameraPathFileIn) {
+        cameraAnimator.copyPoseToCamera(camera);
+    }
 
     QuadSet quadSet(windowSize);
     QUASARReceiver quasarReceiver(quadSet, maxLayers, videoURL, proxiesURL);
@@ -311,12 +329,22 @@ int main(int argc, char** argv) {
             }
         }
         auto keys = window->getKeys();
-        camera.processKeyboard(keys, dt);
-        if (keys.ESC_PRESSED) {
-            window->close();
+
+        if (cameraAnimator.running) {
+            bool updateClient = cameraAnimator.update(!cameraPathFileIn ? dt : 1.0 / MILLISECONDS_IN_SECOND);
+            if (updateClient) {
+                cameraAnimator.copyPoseToCamera(camera);
+            }
+            now = cameraAnimator.now;
+            dt = cameraAnimator.dt;
+        } else {
+            camera.processKeyboard(keys, dt);
+            if (keys.ESC_PRESSED) {
+                window->close();
+            }
+            auto scroll = window->getScrollOffset();
+            camera.processScroll(scroll.y);
         }
-        auto scroll = window->getScrollOffset();
-        camera.processScroll(scroll.y);
 
         // Send pose to streamer
         pose_id_t currPoseID = poseStreamer.sendPose();

@@ -122,14 +122,12 @@ void HybridReceiver::updateMesh(bool isWideFOV) {
     Mesh& meshInUse = isWideFOV ? visibleMeshWideFOV : visibleMesh;
     BC4DepthVideoTexture& depthTextureInUse = isWideFOV ? depthTextureWideFOV : depthTexture;
     if (isWideFOV) {
-        spdlog::info("Updating visible wide fov mesh");
         visibleTextureWideFOV.bind();
         poseIdColor = visibleTextureWideFOV.draw();
         depthTextureWideFOV.bind();
         poseIdDepth = depthTextureWideFOV.draw();
 
     } else {
-        spdlog::info("Updating visible mesh");
         visibleTexture.bind();
         poseIdColor = visibleTexture.draw();
         depthTexture.bind();
@@ -177,6 +175,7 @@ void HybridReceiver::updateMesh(bool isWideFOV) {
                                         ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
     meshWarpReconstructShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
                                     GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
+    glFinish();
 }
 
 
@@ -198,10 +197,12 @@ void HybridReceiver::recvData(
     {
         std::unique_lock<std::mutex> lock(m);
         if (!framePending) {
+            spdlog::info("No frame pending, waiting for frame");
             return;
         }
 
         if (videoAtlasTexture.getLatestPoseID() < framePending->poseID) { // Video is behind, wait until video catches up
+            spdlog::info("Video is behind, waiting for video to catch up");
             return;
         }
 
@@ -219,7 +220,7 @@ void HybridReceiver::recvData(
     alphaAtlasTexture.loadFromData(frame->bufferPool.alphaData.data());
 
     // Reconstruct meshes from frame
-    reconstructFrame(frame);
+    reconstructHiddenLayers(frame);
 
     // Reset frame
     {
@@ -229,4 +230,124 @@ void HybridReceiver::recvData(
     cv.notify_one();
 
     return;
+}
+
+
+void HybridReceiver::reconstructHiddenLayers(std::shared_ptr<Frame> frame) {
+    
+    frame->cameraPose.copyPoseToCamera(remoteCamera);
+
+    spdlog::info("    Loading camera pose: {}, {}, {}", remoteCamera.getPosition().x, remoteCamera.getPosition().y, remoteCamera.getPosition().z);
+    spdlog::info("    Loading camera rotation: {}, {}, {}", remoteCamera.getRotationEuler().x, remoteCamera.getRotationEuler().y, remoteCamera.getRotationEuler().z);
+    spdlog::info("    Loading camera fovy: {}", remoteCamera.getFovyDegrees());
+    const glm::vec2& gBufferSize = quadSet.getSize();
+
+    for (int layer = 0; layer < hiddenLayers; layer++) {
+        auto sizes = quadSet.loadFromMemory(bufferPool.uncompressedQuads[layer], bufferPool.uncompressedOffsets[layer]);
+        referenceFrames[layer].numQuads = sizes.numQuads;
+        referenceFrames[layer].numDepthOffsets = sizes.numDepthOffsets;
+        stats.transferTimeMs += quadSet.stats.transferTimeMs;
+
+        meshes[layer].appendQuads(quadSet, gBufferSize);
+        meshes[layer].createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
+
+        auto meshBufferSizes = meshes[layer].getBufferSizes();
+        stats.totalTriangles += meshBufferSizes.numIndices / 3;
+        stats.sizes += sizes;
+    }
+}
+
+
+QuadFrame::FrameType HybridReceiver::loadFromMemory(const std::vector<char>& inputData) {
+    
+
+    spdlog::info("Loading inputData of size {}", inputData.size());
+    const char* ptr = inputData.data();
+
+    // Read header
+    Header header;
+    std::memcpy(&header, ptr, sizeof(Header));
+    ptr += sizeof(Header);
+
+    size_t expectedSize = header.getSize();
+    if (inputData.size() < expectedSize) {
+        throw std::runtime_error("Input data size " +
+                                 std::to_string(inputData.size()) +
+                                 " is smaller than expected from header " +
+                                 std::to_string(expectedSize));
+    }
+
+    std::shared_ptr<Frame> frame;
+    {
+        std::unique_lock<std::mutex> lock(m);
+        cv.wait(lock, [&]() { return frameFree != nullptr; });
+        frame = frameFree;
+        frameFree.reset();
+    }
+
+    frame->poseID = header.poseID;
+    frame->frameType = header.frameType;
+
+    // Read parameter data
+    maxLayers = header.params.numLayers;
+    setViewSphereDiameter(header.params.viewSphereDiameter);
+    remoteCameraWideFOV.setFovyDegrees(header.params.wideFOV);
+
+    spdlog::info("    Loading camera size: {}", header.cameraSize);
+    spdlog::info("    Loading alpha size: {}", header.alphaSize);
+    spdlog::info("    Loading geometry size: {}", header.geometrySize);
+    
+    // Read camera data
+    frame->cameraPose.loadFromMemory(ptr, header.cameraSize);
+    ptr += header.cameraSize;
+
+    // Read alpha data
+    alphaCodec.decompress(ptr, frame->bufferPool.alphaData, header.alphaSize);
+
+    // dump alpha data to file
+    ptr += header.alphaSize;
+
+    const char* layerPtr = ptr;
+    uint32_t layerSize;
+
+    std::vector<std::future<size_t>> futures;
+
+    double startTime = timeutils::getTimeMicros();
+    int layersSize = 0;
+    for (int layer = 0; layer < hiddenLayers; layer++) {
+        std::memcpy(&layerSize, layerPtr, sizeof(uint32_t));
+        const char* dataPtr = layerPtr + sizeof(uint32_t);
+
+        // print out to screen the first 100 bytes of the data
+        // spdlog::info("First 100 bytes of data for layer {} with size {}: {}", layer, layerSize, std::string(dataPtr, std::min((int)layerSize, 100)));
+
+        futures.emplace_back(threadPool->submit_task([&, layer, dataPtr, layerSize]() {
+            return referenceFrames[layer].loadFromMemory(dataPtr, layerSize);
+        }));
+
+        layerPtr += sizeof(uint32_t) + layerSize;
+
+        if (layer < hiddenLayers - 1) {
+            layersSize += layerSize;
+        }
+    }
+
+    for (auto& f : futures) f.get();
+
+    frame->decompressReferenceHiddenLayersWideFOV(threadPool, referenceFrames);
+
+    spdlog::info("    Total hidden layers size: {}", layersSize);
+
+
+    stats.loadTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+
+    // Signal that frame is ready
+    {
+        std::lock_guard<std::mutex> lock(m);
+        framePending = frame;
+    }
+    cv.notify_one();
+
+    return frame->frameType;
+
 }
