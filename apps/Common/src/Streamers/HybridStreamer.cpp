@@ -245,6 +245,29 @@ HybridStreamer::HybridStreamer(
 
     spdlog::info("HybridStreamer initialized");
 
+    // open the stats CSV file
+    statsCSVFileName = "hybrid_streamer_stats.csv";
+    statsCSVFile.open(statsCSVFileName);
+
+    // write the header to the CSV file 
+    statsCSVFile << "frameID";
+    statsCSVFile << ",visibles_render";
+    statsCSVFile << ",visibles_compress";
+    statsCSVFile << ",wide_fov_render";
+    statsCSVFile << ",wide_fov_compress";
+
+    for (int layer = 0; layer < hiddenLayers; layer++) { 
+        statsCSVFile << ",layer_" << layer << "_render";
+        statsCSVFile << ",layer_" << layer << "_create";
+        statsCSVFile << ",layer_" << layer << "_compress";
+    }
+
+    statsCSVFile << ",total_render";
+    statsCSVFile << ",total_create";
+    statsCSVFile << ",total_compress";
+    statsCSVFile << std::endl;
+    statsCSVFile.close();
+
 }
 
 void HybridStreamer::addMeshesToScene(Scene& localScene) {
@@ -353,8 +376,18 @@ void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, 
 
 RenderStats HybridStreamer::generateFrame() {
     frameID++;
-    // Reset stats
-    stats = { 0 };
+    
+    timeStats = {
+        .genFrameStatsByLayer = std::vector<genFrameStats>(hiddenLayers),
+        .visibleMeshGenFrameStats = { 0 },
+        .wideFovMeshGenFrameStats = { 0 },
+        .totalRenderTimeMs = 0.0,
+        .totalCreateTimeMs = 0.0,
+        .totalCompressTimeMs = 0.0,
+        .frameSize = 0.0,
+    };
+
+    double startTime = timeutils::getTimeMicros();
     RenderStats renderStats;
 
     /*
@@ -364,6 +397,10 @@ RenderStats HybridStreamer::generateFrame() {
     */
     // Render all the objects in the scene
     renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
+
+    double depthPeelingRenderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    timeStats.totalRenderTimeMs += depthPeelingRenderTimeMs;
+    startTime = timeutils::getTimeMicros();
 
     for (int layer = 0; layer < hiddenLayers; layer++) {
         // Always use the remoteCamera
@@ -386,13 +423,24 @@ RenderStats HybridStreamer::generateFrame() {
             meshToUse, 
             referenceFrames[layer]);
         
+        
+        timeStats.genFrameStatsByLayer[layer].renderTimeMs = depthPeelingRenderTimeMs;
+        timeStats.genFrameStatsByLayer[layer].createTimeMs = frameGenerator.stats.createQuadsTimeMs;
+        timeStats.genFrameStatsByLayer[layer].compressTimeMs = frameGenerator.stats.compressTimeMs;
+        timeStats.totalCreateTimeMs += timeStats.genFrameStatsByLayer[layer].createTimeMs;
+        timeStats.totalCompressTimeMs += timeStats.genFrameStatsByLayer[layer].compressTimeMs;
+
         tonemapper.setUniforms(renderTargetToUse_noTone);
         tonemapper.drawToRenderTarget(remoteRenderer, renderTargetToUse, false);
-        
     }
-
+    
+    /*
+    ============================
+    Generate visible mesh
+    ============================
+    */
     // Render all objects in scene
-    double startTime = timeutils::getTimeMicros();
+    startTime = timeutils::getTimeMicros();
     renderStats = remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCamera);
 
     // Copy to intermediate render target
@@ -405,11 +453,17 @@ RenderStats HybridStreamer::generateFrame() {
     tonemapper.enableTonemapping(true);
     tonemapper.drawToRenderTarget(remoteRenderer, visibleVideoStreamerRT);
     depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerRT);
-    stats.totalRenderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    
+    // We don't have createTime for meshwarp, so we just keep renderTime and compressTime 
+    double visibleMeshRenderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    timeStats.totalRenderTimeMs += visibleMeshRenderTimeMs;
+    timeStats.visibleMeshGenFrameStats.renderTimeMs = visibleMeshRenderTimeMs;
 
     // Compress depth map to BC4 format with ZSTD
-    stats.compressedSize = depthStreamerRT.generateFrame();
-    stats.totalCompressTimeMs = depthStreamerRT.stats.compressTimeMs;
+    size_t visibleMeshCompressedSize = depthStreamerRT.generateFrame();
+    
+    timeStats.visibleMeshGenFrameStats.compressTimeMs = depthStreamerRT.stats.compressTimeMs;
+    timeStats.totalCompressTimeMs += timeStats.visibleMeshGenFrameStats.compressTimeMs;
 
     // Reconstruct visible mesh using meshwarp
     reconstructMeshwarp(remoteCamera, visibleMesh, depthStreamerRT);
@@ -421,6 +475,7 @@ RenderStats HybridStreamer::generateFrame() {
     Wide FOV visible layer rendering
     ============================
     */
+    startTime = timeutils::getTimeMicros();
 
     remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
 
@@ -448,9 +503,18 @@ RenderStats HybridStreamer::generateFrame() {
     // render into depthStreamerWideFOV
     tonemapper.drawToRenderTarget(remoteRenderer, visibleVideoStreamerWideFOV);
     depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerWideFOV);
-    depthStreamerWideFOV.generateFrame();
+    
+    // Render finished, log the time
+    double wideFovMeshRenderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    timeStats.totalRenderTimeMs += wideFovMeshRenderTimeMs;
+    timeStats.wideFovMeshGenFrameStats.renderTimeMs = wideFovMeshRenderTimeMs;
+    
+    size_t wideFovMeshCompressedSize = depthStreamerWideFOV.generateFrame();
 
-    // spdlog::info("Generating wide fov depth map done");
+    timeStats.wideFovMeshGenFrameStats.compressTimeMs = depthStreamerWideFOV.stats.compressTimeMs;
+    timeStats.totalCompressTimeMs += timeStats.wideFovMeshGenFrameStats.compressTimeMs;
+
+    
 
     // // Reconstruct wide fov visible mesh using meshwarp
     reconstructMeshwarp(remoteCameraWideFOV, visibleMeshWideFOV, depthStreamerWideFOV);
@@ -497,13 +561,32 @@ RenderStats HybridStreamer::generateFrame() {
     // videoAtlasStreamerRT.writeColorAsPNG("video_atlas.png");
     // alphaAtlasRT.writeAlphaAsPNG("alpha_atlas.png");
     spdlog::info("HybridStreamer generated frame");
+
+    // write out the time stats to CSV file
+    statsCSVFile.open(statsCSVFileName, std::ios::app);
+    statsCSVFile << frameID << ",";
+    statsCSVFile << timeStats.visibleMeshGenFrameStats.renderTimeMs << ",";
+    statsCSVFile << timeStats.visibleMeshGenFrameStats.compressTimeMs << ",";
+    statsCSVFile << timeStats.wideFovMeshGenFrameStats.renderTimeMs << ",";
+    statsCSVFile << timeStats.wideFovMeshGenFrameStats.compressTimeMs << ",";
+
+    for (int layer = 0; layer < hiddenLayers; layer++) {
+        statsCSVFile << timeStats.genFrameStatsByLayer[layer].renderTimeMs << ",";
+        statsCSVFile << timeStats.genFrameStatsByLayer[layer].createTimeMs << ",";
+        statsCSVFile << timeStats.genFrameStatsByLayer[layer].compressTimeMs << ",";
+    }
+    statsCSVFile << timeStats.totalRenderTimeMs << ",";
+    statsCSVFile << timeStats.totalCreateTimeMs << ",";
+    statsCSVFile << timeStats.totalCompressTimeMs << std::endl;
+    statsCSVFile.close();
+
     return renderStats;
 }
 
 void HybridStreamer::sendFrame(pose_id_t poseID) {
 
     // write alpha atlas and compressed depth offset to memory
-    stats.frameSize = writeToMemory(poseID, compressedData);
+    timeStats.frameSize = writeToMemory(poseID, compressedData);
 
     visibleVideoStreamerRT.sendFrame(poseID);
     visibleVideoStreamerWideFOV.sendFrame(poseID);

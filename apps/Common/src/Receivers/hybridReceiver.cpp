@@ -113,6 +113,17 @@ HybridReceiver::HybridReceiver(
     meshWarpReconstructShader.setVec2("depthMapSize", glm::vec2(depthTexture.width, depthTexture.height));
     meshWarpReconstructShader.setUint("vertexGroupSize", vertexGroupSize);
 
+    // Initialize CSV file for stats
+    statsCSVFileName = "hybrid_receiver_stats.csv";
+    statsCSVFile.open(statsCSVFileName);
+    statsCSVFile << "frame_id,memory_transfer_time_ms,visible,wide_fov";
+    for (int layer = 0; layer < hiddenLayers; layer++) {
+        statsCSVFile << ",layer_" << layer << "_decompress";
+        statsCSVFile << ",layer_" << layer << "_depth_peeling";
+    }
+    statsCSVFile << ",total_time_ms" << std::endl;
+    statsCSVFile.close();
+
 }
 
 void HybridReceiver::updateMesh(bool isWideFOV) {
@@ -184,14 +195,30 @@ void HybridReceiver::recvData(
         double& elapsedTimeColor, 
         double& elapsedTimeDepth) {
 
+
+    struct TimeStats timeStats;
+    timeStats.decompressTimeMsByLayer.resize(hiddenLayers);
+    timeStats.depthPeelingTimeMsByLayer.resize(hiddenLayers);
+    timeStats.meshwarpReconstructVisibleTimeMs = 0.0;
+    timeStats.meshwarpReconstructWideFovTimeMs = 0.0;
+    timeStats.totalTimeMs = 0.0;
+
+
+    double startTime = timeutils::getTimeMicros();
+
     // Get poses for the frames
     poseStreamer.getPose(poseIdColor, &colorFramePose, &elapsedTimeColor);
     poseStreamer.getPose(poseIdDepth, &depthFramePose, &elapsedTimeDepth);
 
     // Update both visible and wide FOV meshes
     updateMesh(true);
+    
+    timeStats.meshwarpReconstructWideFovTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    startTime = timeutils::getTimeMicros();
+    
     updateMesh(false);
-
+    
+    timeStats.meshwarpReconstructVisibleTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
     // Wait for a frame that has been written to
     std::shared_ptr<Frame> frame;
     {
@@ -220,7 +247,27 @@ void HybridReceiver::recvData(
     alphaAtlasTexture.loadFromData(frame->bufferPool.alphaData.data());
 
     // Reconstruct meshes from frame
-    reconstructHiddenLayers(frame);
+    TimeStats timeStatsDp = reconstructHiddenLayers(frame);
+
+    // Update time stats
+    timeStats.totalTimeMs += timeStats.meshwarpReconstructVisibleTimeMs;
+    timeStats.totalTimeMs += timeStats.meshwarpReconstructWideFovTimeMs;
+    timeStats.decompressTimeMsByLayer = timeStatsDp.decompressTimeMsByLayer;
+    timeStats.depthPeelingTimeMsByLayer = timeStatsDp.depthPeelingTimeMsByLayer;
+    timeStats.totalTimeMs += timeStatsDp.totalTimeMs;
+
+    // Write stats to CSV file
+    statsCSVFile.open(statsCSVFileName, std::ios::app);
+    statsCSVFile << frameID << ",";
+    statsCSVFile << timeStats.memoryTransferTimeMs << ",";
+    statsCSVFile << timeStats.meshwarpReconstructVisibleTimeMs << ",";
+    statsCSVFile << timeStats.meshwarpReconstructWideFovTimeMs << ",";
+    for (int layer = 0; layer < hiddenLayers; layer++) {
+        statsCSVFile << timeStats.decompressTimeMsByLayer[layer] << ",";
+        statsCSVFile << timeStats.depthPeelingTimeMsByLayer[layer] << ",";
+    }
+    statsCSVFile << timeStats.totalTimeMs << std::endl;
+    statsCSVFile.close();
 
     // Reset frame
     {
@@ -233,8 +280,13 @@ void HybridReceiver::recvData(
 }
 
 
-void HybridReceiver::reconstructHiddenLayers(std::shared_ptr<Frame> frame) {
+HybridReceiver::TimeStats HybridReceiver::reconstructHiddenLayers(std::shared_ptr<Frame> frame) {
     
+    TimeStats timeStats;
+    timeStats.decompressTimeMsByLayer.resize(hiddenLayers);
+    timeStats.depthPeelingTimeMsByLayer.resize(hiddenLayers);
+    timeStats.totalTimeMs = 0.0;
+
     frame->cameraPose.copyPoseToCamera(remoteCamera);
 
     spdlog::info("    Loading camera pose: {}, {}, {}", remoteCamera.getPosition().x, remoteCamera.getPosition().y, remoteCamera.getPosition().z);
@@ -243,10 +295,14 @@ void HybridReceiver::reconstructHiddenLayers(std::shared_ptr<Frame> frame) {
     const glm::vec2& gBufferSize = quadSet.getSize();
 
     for (int layer = 0; layer < hiddenLayers; layer++) {
+        double startTime = timeutils::getTimeMicros();
         auto sizes = quadSet.loadFromMemory(bufferPool.uncompressedQuads[layer], bufferPool.uncompressedOffsets[layer]);
         referenceFrames[layer].numQuads = sizes.numQuads;
         referenceFrames[layer].numDepthOffsets = sizes.numDepthOffsets;
         stats.transferTimeMs += quadSet.stats.transferTimeMs;
+
+        timeStats.decompressTimeMsByLayer[layer] = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+        startTime = timeutils::getTimeMicros();
 
         meshes[layer].appendQuads(quadSet, gBufferSize);
         meshes[layer].createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
@@ -254,7 +310,14 @@ void HybridReceiver::reconstructHiddenLayers(std::shared_ptr<Frame> frame) {
         auto meshBufferSizes = meshes[layer].getBufferSizes();
         stats.totalTriangles += meshBufferSizes.numIndices / 3;
         stats.sizes += sizes;
+
+        timeStats.depthPeelingTimeMsByLayer[layer] = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+        
+        timeStats.totalTimeMs += timeStats.decompressTimeMsByLayer[layer];
+        timeStats.totalTimeMs += timeStats.depthPeelingTimeMsByLayer[layer];
     }
+
+    return timeStats;
 }
 
 

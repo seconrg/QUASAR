@@ -75,7 +75,11 @@ public:
         double frameSize = 0.0;
 
         QuadSet::Sizes proxySizes;
-    } stats;
+    };
+
+    // log out stats to CSV file
+    std::ofstream statsCSVFile;
+    std::string statsCSVFileName;
 
     // Hidden Layers
     std::vector<FrameRenderTarget> frameRTsHidLayer;
@@ -95,6 +99,12 @@ public:
     std::string videoWideFovURL;
     std::string depthWideFovURL;
 
+    struct genFrameStats {
+        double renderTimeMs;
+        double createTimeMs;
+        double compressTimeMs;
+    };
+
     struct stats {
         std::vector<double> renderTimeMsByLayer;
         std::vector<double> createProxiesTimeMsByLayer;
@@ -102,6 +112,18 @@ public:
         double totalCompressTimeMsByLayer;
         double frameSize = 0.0;
     };
+
+    struct timeStats {
+        std::vector<genFrameStats> genFrameStatsByLayer;
+        genFrameStats visibleMeshGenFrameStats;
+        genFrameStats wideFovMeshGenFrameStats;
+        double totalRenderTimeMs;
+        double totalCreateTimeMs;
+        double totalCompressTimeMs;
+        double frameSize;
+    };
+
+    struct timeStats timeStats;
 
     int frameID = 0;
 

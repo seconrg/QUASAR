@@ -232,13 +232,6 @@ int main(int argc, char** argv) {
             else
                 ImGui::TextColored(ImVec4(1,0,0,1), "Draw Calls: %ld", renderStats.drawCalls);
 
-            ImGui::TextColored(ImVec4(0,1,1,1), "Total Quads: %ld (%.3f MB)",
-                               hybridStreamer.stats.proxySizes.numQuads,
-                               hybridStreamer.stats.proxySizes.quadsSize / BYTES_PER_MEGABYTE);
-            ImGui::TextColored(ImVec4(1,0,1,1), "Total Depth Offsets: %ld (%.3f MB)",
-                               hybridStreamer.stats.proxySizes.numDepthOffsets,
-                               hybridStreamer.stats.proxySizes.depthOffsetsSize / BYTES_PER_MEGABYTE);
-
             ImGui::Separator();
 
             cameraHeader.draw(now, dt);

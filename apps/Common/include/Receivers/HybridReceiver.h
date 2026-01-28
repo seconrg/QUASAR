@@ -27,12 +27,27 @@ namespace quasar {
 
 class HybridReceiver : public QUASARReceiver {
 public: 
+
+    struct TimeStats {
+        double memoryTransferTimeMs = 0.0;
+        double meshwarpReconstructVisibleTimeMs = 0.0;
+        double meshwarpReconstructWideFovTimeMs = 0.0;
+        std::vector<double> decompressTimeMsByLayer;
+        std::vector<double> depthPeelingTimeMsByLayer;
+        double totalTimeMs = 0.0;
+    };
+
     std::string videoVisibleURL;
     std::string videoVisibleWideFovURL;
     std::string depthVisibleURL;
     std::string depthVisibleWideFovURL;
 
     uint hiddenLayers;
+
+    // CSV File for stats
+    std::ofstream statsCSVFile;
+    std::string statsCSVFileName;
+    int frameID = 0;
 
     // visible layer for meshwarp
     VideoTexture visibleTexture;
@@ -72,7 +87,7 @@ public:
     void updateMesh(bool isWideFOV);
 
     QuadFrame::FrameType loadFromMemory(const std::vector<char>& inputData) override;
-    void reconstructHiddenLayers(std::shared_ptr<Frame> frame);
+    struct TimeStats reconstructHiddenLayers(std::shared_ptr<Frame> frame);
 
 
 private:
