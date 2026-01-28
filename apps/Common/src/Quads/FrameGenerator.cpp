@@ -29,6 +29,7 @@ void FrameGenerator::createReferenceFrame(
     stats.generateQuadsTimeMs = quadsGenerator->stats.generateQuadsTimeMs;
     stats.simplifyQuadsTimeMs = quadsGenerator->stats.simplifyQuadsTimeMs;
     stats.gatherQuadsTimeMs = quadsGenerator->stats.gatherQuadsTimeMs;
+    glFinish();
     stats.createQuadsTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
     // Transfer updated proxies to CPU for compression
@@ -44,7 +45,7 @@ void FrameGenerator::createReferenceFrame(
     auto quadsFuture = threadPool->submit_task([&]() {
         return referenceFrame.compressAndStoreQuads(uncompressedQuads);
     });
-
+    glFinish();
     // Using GPU buffers, reconstruct mesh using proxies
     startTime = timeutils::getTimeMicros();
     referenceMesh.appendQuads(quadSet, gBufferSize);
@@ -154,7 +155,7 @@ void FrameGenerator::createResidualFrame(
     auto quadsUpdatedFuture = threadPool->submit_task([&]() {
         return residualFrame.compressAndStoreUpdatedQuads(uncompressedQuads);
     });
-
+    glFinish();
     // Using GPU buffers, update reference frame mesh using proxies
     startTime = timeutils::getTimeMicros();
     referenceMesh.appendQuads(quadSet, gBufferSize, false /* not a reference frame */);
