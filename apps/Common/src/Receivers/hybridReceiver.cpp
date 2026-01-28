@@ -305,7 +305,11 @@ HybridReceiver::TimeStats HybridReceiver::reconstructHiddenLayers(std::shared_pt
         startTime = timeutils::getTimeMicros();
 
         meshes[layer].appendQuads(quadSet, gBufferSize);
+
+        spdlog::info("    Appending quads for layer {} took {} ms", layer, timeutils::microsToMillis(timeutils::getTimeMicros() - startTime));
+        double tmpStartTime = timeutils::getTimeMicros();
         meshes[layer].createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
+        spdlog::info("    Creating mesh from proxies for layer {} took {} ms", layer, timeutils::microsToMillis(timeutils::getTimeMicros() - tmpStartTime));
 
         auto meshBufferSizes = meshes[layer].getBufferSizes();
         stats.totalTriangles += meshBufferSizes.numIndices / 3;
