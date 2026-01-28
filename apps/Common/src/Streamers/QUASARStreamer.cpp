@@ -228,6 +228,18 @@ QUASARStreamer::QUASARStreamer(
     if (!videoURL.empty() && !proxiesURL.empty()) {
         spdlog::info("Created QUASARStreamer that sends to URL: tcp://{}", proxiesURL);
     }
+
+    quasarStatsCSVFileName = "quasar_stats.csv";
+    quasarStatsCSVFile.open(quasarStatsCSVFileName);
+    quasarStatsCSVFile << "frame_id";
+    quasarStatsCSVFile << ",visible_render";
+    for (int layer = 0; layer < maxLayers; layer++) {
+        quasarStatsCSVFile << ",layer_" << layer << "_create_proxies";
+        quasarStatsCSVFile << ",layer_" << layer << "_compress";
+        quasarStatsCSVFile << ",layer_" << layer << "_create_mesh";
+    }
+    quasarStatsCSVFile << ",total_compress" << std::endl;
+    quasarStatsCSVFile.close();
 }
 
 QUASARStreamer::~QUASARStreamer() {
@@ -302,7 +314,12 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     double startTime = timeutils::getTimeMicros();
     RenderStats renderStats = remoteRendererDP.drawObjects(remoteScene, remoteCamera);
     stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
-
+    
+    frameID++;
+    // open file 
+    quasarStatsCSVFile.open(quasarStatsCSVFileName, std::ios::app);
+    quasarStatsCSVFile << frameID;
+    quasarStatsCSVFile << "," << stats.totalRenderTimeMs;
     for (int layer = 0; layer < maxLayers; layer++) {
         int hiddenLayerIndex = layer - 1;
 
@@ -364,6 +381,7 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
             quadsGenerator->params.expandEdges = false;
         }
         ReferenceFrame dummyFrame;
+        glFinish();
         frameGenerator.createReferenceFrame(
             (layer != 0 && layer != maxLayers - 1) ? renderTargetToUse_noTone : renderTargetToUse,
             remoteCameraToUse,
@@ -397,6 +415,11 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         stats.totalAppendQuadsTimeMs += frameGenerator.stats.appendQuadsTimeMs;
         stats.totalCreateVertIndTimeMs += frameGenerator.stats.createVertIndTimeMs;
         stats.totalCreateMeshTimeMs += frameGenerator.stats.createMeshTimeMs;
+
+
+        stats.createProxiesTimeMsByLayer.push_back(frameGenerator.stats.createQuadsTimeMs);
+        stats.compressTimeMsByLayer.push_back(frameGenerator.stats.compressTimeMs);
+        stats.createMeshTimeMsByLayer.push_back(frameGenerator.stats.createMeshTimeMs);
 
         if (!createResidualFrame || layer != 0) {
             stats.totalCompressTimeMs += frameGenerator.stats.compressTimeMs;
@@ -493,6 +516,14 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
                           residualFrame.getTotalNumDepthOffsetsRevealed(), residualFrame.getTotalDepthOffsetsRevealedSize() / BYTES_PER_MEGABYTE);
         }
     }
+
+    for (int layer = 0; layer < maxLayers; layer++) {
+        quasarStatsCSVFile << "," << stats.createProxiesTimeMsByLayer[layer];
+        quasarStatsCSVFile << "," << stats.compressTimeMsByLayer[layer];
+        quasarStatsCSVFile << "," << stats.createMeshTimeMsByLayer[layer];
+    }
+    quasarStatsCSVFile << "," << stats.totalCompressTimeMs << std::endl;
+    quasarStatsCSVFile.close();
 
     // Update color and alpha atlases (tile frames side by side)
     uint row = 0, col = 0;

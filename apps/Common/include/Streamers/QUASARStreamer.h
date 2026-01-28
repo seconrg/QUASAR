@@ -80,8 +80,17 @@ public:
         double totalGenDepthTimeMs = 0.0;
         double totalCompressTimeMs = 0.0;
         double frameSize = 0.0;
+
+        std::vector<double> createProxiesTimeMsByLayer;
+        std::vector<double> compressTimeMsByLayer;
+        std::vector<double> createMeshTimeMsByLayer;
         QuadSet::Sizes proxySizes;
     } stats;
+
+    // log out stats to CSV file
+    std::ofstream quasarStatsCSVFile;
+    std::string quasarStatsCSVFileName;
+    int frameID = 0;
 
     QUASARStreamer(
         QuadSet& quadSet,
