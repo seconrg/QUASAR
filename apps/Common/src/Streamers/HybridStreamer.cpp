@@ -255,11 +255,12 @@ HybridStreamer::HybridStreamer(
     statsCSVFile << ",visibles_compress";
     statsCSVFile << ",wide_fov_render";
     statsCSVFile << ",wide_fov_compress";
-
+    statsCSVFile << ",dep_render";
     for (int layer = 0; layer < hiddenLayers; layer++) { 
-        statsCSVFile << ",layer_" << layer << "_render";
+        
         statsCSVFile << ",layer_" << layer << "_create";
         statsCSVFile << ",layer_" << layer << "_compress";
+        statsCSVFile << ",layer_" << layer << "_create_mesh";
     }
 
     statsCSVFile << ",total_render";
@@ -427,6 +428,7 @@ RenderStats HybridStreamer::generateFrame() {
         timeStats.genFrameStatsByLayer[layer].renderTimeMs = depthPeelingRenderTimeMs;
         timeStats.genFrameStatsByLayer[layer].createTimeMs = frameGenerator.stats.createQuadsTimeMs;
         timeStats.genFrameStatsByLayer[layer].compressTimeMs = frameGenerator.stats.compressTimeMs;
+        timeStats.genFrameStatsByLayer[layer].createMeshTimeMs = frameGenerator.stats.createMeshTimeMs;
         timeStats.totalCreateTimeMs += timeStats.genFrameStatsByLayer[layer].createTimeMs;
         timeStats.totalCompressTimeMs += timeStats.genFrameStatsByLayer[layer].compressTimeMs;
 
@@ -466,7 +468,11 @@ RenderStats HybridStreamer::generateFrame() {
     timeStats.totalCompressTimeMs += timeStats.visibleMeshGenFrameStats.compressTimeMs;
 
     // Reconstruct visible mesh using meshwarp
+    startTime = timeutils::getTimeMicros();
     reconstructMeshwarp(remoteCamera, visibleMesh, depthStreamerRT);
+    double visibleMeshReconstructTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    timeStats.totalRenderTimeMs += visibleMeshReconstructTimeMs;
+    timeStats.visibleMeshGenFrameStats.createTimeMs = visibleMeshReconstructTimeMs;
 
     spdlog::info("Reconstructing visible mesh using meshwarp done");
 
@@ -514,10 +520,12 @@ RenderStats HybridStreamer::generateFrame() {
     timeStats.wideFovMeshGenFrameStats.compressTimeMs = depthStreamerWideFOV.stats.compressTimeMs;
     timeStats.totalCompressTimeMs += timeStats.wideFovMeshGenFrameStats.compressTimeMs;
 
-    
-
     // // Reconstruct wide fov visible mesh using meshwarp
+    startTime = timeutils::getTimeMicros();
     reconstructMeshwarp(remoteCameraWideFOV, visibleMeshWideFOV, depthStreamerWideFOV);
+    double wideFovMeshReconstructTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    timeStats.totalRenderTimeMs += wideFovMeshReconstructTimeMs;
+    timeStats.wideFovMeshGenFrameStats.createTimeMs = wideFovMeshReconstructTimeMs;
 
     // depthStreamerWideFOV.writeColorAsPNG("debug_depth_widefov.png");
 
@@ -570,10 +578,13 @@ RenderStats HybridStreamer::generateFrame() {
     statsCSVFile << timeStats.wideFovMeshGenFrameStats.renderTimeMs << ",";
     statsCSVFile << timeStats.wideFovMeshGenFrameStats.compressTimeMs << ",";
 
+    statsCSVFile << timeStats.genFrameStatsByLayer[0].renderTimeMs << ",";
+
     for (int layer = 0; layer < hiddenLayers; layer++) {
-        statsCSVFile << timeStats.genFrameStatsByLayer[layer].renderTimeMs << ",";
+        
         statsCSVFile << timeStats.genFrameStatsByLayer[layer].createTimeMs << ",";
         statsCSVFile << timeStats.genFrameStatsByLayer[layer].compressTimeMs << ",";
+        statsCSVFile << timeStats.genFrameStatsByLayer[layer].createMeshTimeMs << ",";
     }
     statsCSVFile << timeStats.totalRenderTimeMs << ",";
     statsCSVFile << timeStats.totalCreateTimeMs << ",";

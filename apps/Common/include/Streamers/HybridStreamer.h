@@ -103,6 +103,7 @@ public:
         double renderTimeMs;
         double createTimeMs;
         double compressTimeMs;
+        double createMeshTimeMs;
     };
 
     struct stats {
