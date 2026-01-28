@@ -253,8 +253,10 @@ HybridStreamer::HybridStreamer(
     statsCSVFile << "frameID";
     statsCSVFile << ",visibles_render";
     statsCSVFile << ",visibles_compress";
+    statsCSVFile << ",visibles_mesh";
     statsCSVFile << ",wide_fov_render";
     statsCSVFile << ",wide_fov_compress";
+    statsCSVFile << ",wide_fov_mesh";
     statsCSVFile << ",dep_render";
     for (int layer = 0; layer < hiddenLayers; layer++) { 
         
@@ -412,7 +414,7 @@ RenderStats HybridStreamer::generateFrame() {
         // blit the hidden layer from depth peeling renderer
         remoteRendererDP.peelingLayers[layer+1].blit(renderTargetToUse_noTone);
         // renderTargetToUse_noTone.writeColorAsPNG("hid_layer_no_tone_" + std::to_string(layer) + ".png");
-
+        glFinish();
         /*
         ============================
         Generate hidden layer reference frames
@@ -575,8 +577,11 @@ RenderStats HybridStreamer::generateFrame() {
     statsCSVFile << frameID << ",";
     statsCSVFile << timeStats.visibleMeshGenFrameStats.renderTimeMs << ",";
     statsCSVFile << timeStats.visibleMeshGenFrameStats.compressTimeMs << ",";
+    statsCSVFile << timeStats.visibleMeshGenFrameStats.createTimeMs << ",";
     statsCSVFile << timeStats.wideFovMeshGenFrameStats.renderTimeMs << ",";
     statsCSVFile << timeStats.wideFovMeshGenFrameStats.compressTimeMs << ",";
+
+    statsCSVFile << timeStats.wideFovMeshGenFrameStats.createTimeMs << ",";
 
     statsCSVFile << timeStats.genFrameStatsByLayer[0].renderTimeMs << ",";
 

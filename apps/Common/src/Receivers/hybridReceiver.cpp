@@ -246,6 +246,8 @@ void HybridReceiver::recvData(
     alphaAtlasTexture.bind();
     alphaAtlasTexture.loadFromData(frame->bufferPool.alphaData.data());
 
+    glFinish();
+
     // Reconstruct meshes from frame
     TimeStats timeStatsDp = reconstructHiddenLayers(frame);
 
