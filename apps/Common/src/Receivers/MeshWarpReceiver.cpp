@@ -98,7 +98,11 @@ void MeshWarpReceiver::loadFromFiles(const Path& dataPath) {
     depthFramePose = colorFramePose;
 
     // Update mesh
+    double startTime = timeutils::getTimeMicros();
     updateMesh();
+    double endTime = timeutils::getTimeMicros();
+    double duration = timeutils::microsToMillis(endTime - startTime);
+    spdlog::info("Update mesh took {} ms", duration);
 }
 
 void MeshWarpReceiver::recvData(const PoseStreamer& poseStreamer, double& elapsedTimeColor, double& elapsedTimeDepth) {
@@ -120,7 +124,11 @@ void MeshWarpReceiver::recvData(const PoseStreamer& poseStreamer, double& elapse
     poseStreamer.getPose(poseIdDepth, &depthFramePose, &elapsedTimeDepth);
 
     // Update mesh
+    double startTime = timeutils::getTimeMicros();
     updateMesh();
+    double endTime = timeutils::getTimeMicros();
+    double duration = timeutils::microsToMillis(endTime - startTime);
+    spdlog::info("Update mesh took {} ms", duration);
 }
 
 void MeshWarpReceiver::updateMesh() {
@@ -166,5 +174,5 @@ void MeshWarpReceiver::updateMesh() {
                                         ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
     meshWarpReconstructShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
                                     GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
-    
+    glFinish();
 }

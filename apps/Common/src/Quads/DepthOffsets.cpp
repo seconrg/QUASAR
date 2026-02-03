@@ -77,13 +77,13 @@ size_t DepthOffsets::loadFromMemory(std::vector<char>& inputData) {
     if (dst) {
         std::memcpy(dst, inputData.data(), inputData.size());
         // check how many values are not 0
-        int numNonZero = 0;
-        for (int i = 0; i < inputData.size(); i++) {
-            if (int(inputData[i]) != 0) {
-                numNonZero++;
-            }
-        }
-        spdlog::info("    Number of non-zero values at read: {}", numNonZero);
+        // int numNonZero = 0;
+        // for (int i = 0; i < inputData.size(); i++) {
+        //     if (int(inputData[i]) != 0) {
+        //         numNonZero++;
+        //     }
+        // }
+        // spdlog::info("    Number of non-zero values at read: {}", numNonZero);
         uploadPBO.unmapFromCPU();
 
         // Upload texture data

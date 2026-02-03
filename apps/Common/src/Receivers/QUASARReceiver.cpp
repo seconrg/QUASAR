@@ -43,9 +43,11 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::stri
     statsCSVFileName = "QUASARReceiver_stats.csv";
     statsCSVFile.open(statsCSVFileName, std::ios::app);
     statsCSVFile << "frameID,loadTimeMs,decompressTimeMs";
-    for (int layer = 0; layer < maxLayers; layer++) {
-        statsCSVFile << "layer" << layer << "_transferTimeMs,layer" << layer << "_createMeshTimeMs" << std::endl;
+    for (int layer = 0; layer < maxLayers-1; layer++) {
+        statsCSVFile << "layer" << layer << "_transferTimeMs,layer" << layer << "_createMeshTimeMs," ;
     }
+    statsCSVFile << ",layer" << maxLayers-1 << "_transferTimeMs,layer" << maxLayers-1 << "_createMeshTimeMs" << std::endl;
+    statsCSVFile.close();
 
     remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
     remoteCameraPrev.setViewMatrix(remoteCamera.getViewMatrix());
@@ -456,13 +458,17 @@ QuadFrame::FrameType QUASARReceiver::reconstructFrame(std::shared_ptr<Frame> fra
     }
 
     // Write stats to CSV file
+    statsCSVFile.open(statsCSVFileName, std::ios::app);
     statsCSVFile << frameID << ",";
     statsCSVFile << stats.loadTimeMs << ",";
     statsCSVFile << stats.decompressTimeMs << ",";
-    for (int layer = 0; layer < maxLayers; layer++) {
+    for (int layer = 0; layer < maxLayers-1; layer++) {
         statsCSVFile << stats.transferTimeMsByLayer[layer] << ",";
-        statsCSVFile << stats.createMeshTimeMsByLayer[layer] << std::endl;
+        statsCSVFile << stats.createMeshTimeMsByLayer[layer] << ",";
     }
+    statsCSVFile << stats.transferTimeMsByLayer[maxLayers-1] << ",";
+    statsCSVFile << stats.createMeshTimeMsByLayer[maxLayers-1] << std::endl;
+    statsCSVFile.close();
 
     return frame->frameType;
 }
