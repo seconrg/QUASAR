@@ -203,13 +203,11 @@ void HybridReceiver::recvData(
     timeStats.meshwarpReconstructWideFovTimeMs = 0.0;
     timeStats.totalTimeMs = 0.0;
 
-
-    double startTime = timeutils::getTimeMicros();
-
     // Get poses for the frames
     poseStreamer.getPose(poseIdColor, &colorFramePose, &elapsedTimeColor);
     poseStreamer.getPose(poseIdDepth, &depthFramePose, &elapsedTimeDepth);
-
+    
+    double startTime = timeutils::getTimeMicros();
     // Update both visible and wide FOV meshes
     updateMesh(true);
     
@@ -261,7 +259,7 @@ void HybridReceiver::recvData(
     // Write stats to CSV file
     statsCSVFile.open(statsCSVFileName, std::ios::app);
     statsCSVFile << frameID << ",";
-    statsCSVFile << timeStats.memoryTransferTimeMs << ",";
+    statsCSVFile << stats.loadTimeMs << ",";
     statsCSVFile << timeStats.meshwarpReconstructVisibleTimeMs << ",";
     statsCSVFile << timeStats.meshwarpReconstructWideFovTimeMs << ",";
     for (int layer = 0; layer < hiddenLayers; layer++) {

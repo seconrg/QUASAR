@@ -31,6 +31,8 @@ public:
         bool applyDeltaEncoding = true;
     } params;
 
+    int count = 0;
+
     FrameGenerator(QuadSet& quadSet);
 
     std::shared_ptr<QuadsGenerator> getQuadsGenerator() { return quadsGenerator; }

@@ -43,9 +43,11 @@ size_t DepthOffsets::writeToMemory(std::vector<char>& outputData) {
     outputData.resize(outputSize);
 
     CudaGLImage::registerHostBuffer(outputData.data(), outputSize);
-    cudaImage.copyArrayToHostAsync(rowBytes, textureSize.y, rowBytes, outputData.data());
+    cudaImage.copyArrayToHost(rowBytes, textureSize.y, rowBytes, outputData.data());
     cudaImage.synchronize();
     CudaGLImage::unregisterHostBuffer(outputData.data());
+    // force cudaImage copy to host to be finished
+
 #else
     size_t rowBytes = bytesPerRow(textureSize.x);
     size_t outputSize = rowBytes * textureSize.y;
@@ -74,6 +76,14 @@ size_t DepthOffsets::loadFromMemory(std::vector<char>& inputData) {
     void* dst = uploadPBO.mapToCPU(GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
     if (dst) {
         std::memcpy(dst, inputData.data(), inputData.size());
+        // check how many values are not 0
+        int numNonZero = 0;
+        for (int i = 0; i < inputData.size(); i++) {
+            if (int(inputData[i]) != 0) {
+                numNonZero++;
+            }
+        }
+        spdlog::info("    Number of non-zero values at read: {}", numNonZero);
         uploadPBO.unmapFromCPU();
 
         // Upload texture data

@@ -39,6 +39,9 @@ public:
         double decompressTimeMs = 0.0;
         double transferTimeMs = 0.0;
         double createMeshTimeMs = 0.0;
+
+        std::vector<double> transferTimeMsByLayer;
+        std::vector<double> createMeshTimeMsByLayer;
         QuadSet::Sizes sizes{};
     } stats;
 
