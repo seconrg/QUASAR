@@ -40,6 +40,13 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::stri
     meshes.reserve(maxLayers);
     referenceFrames.resize(maxLayers);
 
+    statsCSVFileName = "QUASARReceiver_stats.csv";
+    statsCSVFile.open(statsCSVFileName, std::ios::app);
+    statsCSVFile << "frameID,loadTimeMs,decompressTimeMs";
+    for (int layer = 0; layer < maxLayers; layer++) {
+        statsCSVFile << "layer" << layer << "_transferTimeMs,layer" << layer << "_createMeshTimeMs" << std::endl;
+    }
+
     remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
     remoteCameraPrev.setViewMatrix(remoteCamera.getViewMatrix());
 
@@ -105,6 +112,7 @@ void QUASARReceiver::onDataReceived(const std::vector<char>& data) {
 }
 
 QuadFrame::FrameType QUASARReceiver::recvData() {
+
     QuadFrame::FrameType frameType = QuadFrame::FrameType::NONE;
 
     if (proxiesURL.empty()) {
@@ -352,6 +360,7 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
 }
 
 QuadFrame::FrameType QUASARReceiver::reconstructFrame(std::shared_ptr<Frame> frame) {
+    frameID++;
     if (frame->frameType == QuadFrame::FrameType::NONE) {
         return QuadFrame::FrameType::NONE;
     }
@@ -444,6 +453,15 @@ QuadFrame::FrameType QUASARReceiver::reconstructFrame(std::shared_ptr<Frame> fra
         auto meshBufferSizes = meshes[layer].getBufferSizes();
         stats.totalTriangles += meshBufferSizes.numIndices / 3;
         stats.sizes += sizes;
+    }
+
+    // Write stats to CSV file
+    statsCSVFile << frameID << ",";
+    statsCSVFile << stats.loadTimeMs << ",";
+    statsCSVFile << stats.decompressTimeMs << ",";
+    for (int layer = 0; layer < maxLayers; layer++) {
+        statsCSVFile << stats.transferTimeMsByLayer[layer] << ",";
+        statsCSVFile << stats.createMeshTimeMsByLayer[layer] << std::endl;
     }
 
     return frame->frameType;

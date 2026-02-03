@@ -45,6 +45,11 @@ public:
         QuadSet::Sizes sizes{};
     } stats;
 
+    // CSV File for stats
+    std::ofstream statsCSVFile;
+    std::string statsCSVFileName;
+    int frameID = 0;
+
     std::string proxiesURL;
     std::string videoURL;
 
