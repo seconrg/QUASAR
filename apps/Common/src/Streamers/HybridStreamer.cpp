@@ -653,6 +653,7 @@ size_t HybridStreamer::writeToMemory(pose_id_t poseID, std::vector<char>& output
         .cameraSize = static_cast<uint32_t>(cameraData.size()),
         .alphaSize = static_cast<uint32_t>(alphaData.size()),
         .geometrySize = proxySize,
+        .timestamp = double(timeutils::getTimeMicros()),
     };
 
     outputData.resize(header.getSize());

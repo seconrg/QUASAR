@@ -44,6 +44,7 @@ public:
     void setProjectionMatrix(const glm::mat4& proj);
     void setProjectionMatrix(float fovyDeg, float aspect, float near, float far);
     void setViewMatrix(const glm::mat4& view);
+    void setTimestamp(float timestamp) { this->timestamp = timestamp; }
 
     void updateProjectionMatrix();
     void updateViewMatrix();
@@ -66,6 +67,8 @@ private:
     float near;
     float far;
 
+    float timestamp = 0.0f;
+
     glm::mat4 view;
     glm::mat4 proj;
     glm::mat4 projInverse;
@@ -80,6 +83,7 @@ private:
     glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
 
     Frustum frustum;
+
 
     void updateCameraOrientation();
     // Calculates the front vector from the PerspectiveCamera's (updated) Euler Angles

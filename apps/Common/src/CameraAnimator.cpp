@@ -57,8 +57,12 @@ void CameraAnimator::loadAnimation(const std::string& pathFile) {
 bool CameraAnimator::update(double dt) {
     static bool firstUpdate = true;
 
-    if (!running || waypoints.size() < 2)
+    if (!running || waypoints.size() < 2){
+        spdlog::error("Camera animator not running or not enough poses");
         return false;
+    }
+
+    spdlog::info("Camera animator running with {} poses", waypoints.size());
 
     bool waypointUpdated = firstUpdate;
     firstUpdate = false;
@@ -104,9 +108,12 @@ const glm::vec3 CameraAnimator::getCurrentPosition() const {
         double segmentTime = now - start.timestamp;
         float t = static_cast<float>(segmentTime / segmentDuration);
 
+        spdlog::info("End position: {}, {}, {}", end.position.x, end.position.y, end.position.z);
+
         return glm::mix(start.position, end.position, t);
     }
     else {
+        spdlog::info("Current position: {}, {}, {}", waypoints[currentIndex].position.x, waypoints[currentIndex].position.y, waypoints[currentIndex].position.z);
         return waypoints[currentIndex].position;
     }
 }
@@ -133,14 +140,26 @@ const glm::quat CameraAnimator::getCurrentRotation() const {
     }
 }
 
+const double CameraAnimator::getCurrentTimestamp() const {
+    if (!running || currentIndex >= waypoints.size())
+        return waypoints.back().timestamp;
+
+    if (tween) {
+        return now;
+    }
+    return waypoints[currentIndex].timestamp;
+}
+
 void CameraAnimator::copyPoseToCamera(PerspectiveCamera& camera) const {
     if (waypoints.empty())
         return;
 
     if (!running || currentIndex >= waypoints.size())
         return;
-
     camera.setPosition(getCurrentPosition());
     camera.setRotationQuat(getCurrentRotation());
     camera.updateViewMatrix();
+
+    // update the camera's timestamp for the pose
+    camera.setTimestamp(getCurrentTimestamp());
 }

@@ -29,6 +29,7 @@ public:
         uint32_t cameraSize;
         uint32_t alphaSize;
         uint32_t geometrySize;
+        double timestamp;
 
         size_t getSize() const { return sizeof(Header) + cameraSize + alphaSize + geometrySize; }
     };

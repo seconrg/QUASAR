@@ -41,6 +41,8 @@ private:
 
     const glm::vec3 getCurrentPosition() const;
     const glm::quat getCurrentRotation() const;
+
+    const double getCurrentTimestamp() const;
 };
 
 } // namespace quasar

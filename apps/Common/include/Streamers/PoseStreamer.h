@@ -103,6 +103,7 @@ public:
             // }
         }
         currPose.timestamp = timeutils::getTimeMicros();
+        // currPose.timestamp = static_cast<PerspectiveCamera*>(camera)->getTimestamp();
         send((uint8_t*)&currPose);
 
         prevPoses[currPoseID] = currPose;

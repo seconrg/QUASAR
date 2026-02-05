@@ -84,6 +84,16 @@ public:
             perspectiveCamera->setViewMatrix(pose.mono.view);
         }
 
+        // get the pose timestamp
+        double poseTimestamp = pose.timestamp;
+        double currentTimestamp = timeutils::getTimeMicros();
+        double timestampDiff = currentTimestamp - poseTimestamp;
+        spdlog::info("Timestamp difference: {}", timestampDiff);
+        // Log the time difference to the file
+        std::ofstream logFile("timestamp_difference.txt", std::ios::app);
+        logFile << timestampDiff << std::endl;
+        logFile.close();
+
         return pose.id;
     }
 
