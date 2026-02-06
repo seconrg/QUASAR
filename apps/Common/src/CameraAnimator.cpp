@@ -57,12 +57,8 @@ void CameraAnimator::loadAnimation(const std::string& pathFile) {
 bool CameraAnimator::update(double dt) {
     static bool firstUpdate = true;
 
-    if (!running || waypoints.size() < 2){
-        spdlog::error("Camera animator not running or not enough poses");
+    if (!running || waypoints.size() < 2)
         return false;
-    }
-
-    spdlog::info("Camera animator running with {} poses", waypoints.size());
 
     bool waypointUpdated = firstUpdate;
     firstUpdate = false;
@@ -108,12 +104,9 @@ const glm::vec3 CameraAnimator::getCurrentPosition() const {
         double segmentTime = now - start.timestamp;
         float t = static_cast<float>(segmentTime / segmentDuration);
 
-        spdlog::info("End position: {}, {}, {}", end.position.x, end.position.y, end.position.z);
-
         return glm::mix(start.position, end.position, t);
     }
     else {
-        spdlog::info("Current position: {}, {}, {}", waypoints[currentIndex].position.x, waypoints[currentIndex].position.y, waypoints[currentIndex].position.z);
         return waypoints[currentIndex].position;
     }
 }

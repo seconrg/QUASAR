@@ -348,6 +348,8 @@ int main(int argc, char** argv) {
     bool updateClient = true;
     
     app.onRender([&](double now, double dt) {
+
+        double renderStartTime = timeutils::getTimeMicros();
         if (!(ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantCaptureMouse)) {
             auto mouseButtons = window->getMouseButtons();
             window->setMouseCursor(!mouseButtons.LEFT_PRESSED);
@@ -401,9 +403,13 @@ int main(int argc, char** argv) {
         }
 
         // Send pose to streamer
-        poseStreamer.sendPose();
+        pose_id_t poseID = poseStreamer.sendPose();
+        double recvStartTime = timeutils::getTimeMicros();
         hybridReceiver.recvData(poseStreamer, elapsedTimeColor, elapsedTimeDepth);
+        double recvTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - recvStartTime);
+        spdlog::info("Recv Time: {:.3f}ms", recvTimeMs);
         poseStreamer.removePosesLessThan(std::min(hybridReceiver.poseIdColor, hybridReceiver.poseIdDepth));
+        spdlog::info("Pose ID {}: RGB ({}), D ({})", poseID, hybridReceiver.poseIdColor, hybridReceiver.poseIdDepth);
         
         visibleNode.visible = showVisibleLayer;
         wideFovNode.visible = showWideFovLayer;
@@ -413,6 +419,9 @@ int main(int argc, char** argv) {
         
         renderStats = renderer.drawObjects(scene, camera);
         holeFiller.drawToScreen(renderer);
+
+        double renderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - renderStartTime);
+        spdlog::info("Render Time: {:.3f}ms", renderTimeMs);
     }); 
 
     app.run();

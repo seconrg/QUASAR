@@ -236,7 +236,7 @@ int main(int argc, char** argv) {
             lastRenderTime = now;
 
             // Receive pose
-            pose_id_t poseID = poseReceiver.receivePose();
+            pose_id_t poseID = poseReceiver.receivePose().pose_id;
             if (poseID != -1 && poseID != prevPoseID) {
                 // Offset camera
                 if (camera->isVR()) {

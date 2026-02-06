@@ -461,7 +461,7 @@ int main(int argc, char** argv) {
             if (ImGui::Button("Save Proxies")) {
                 if (!saveAsSeparate) {
                     std::vector<char> compressedData;
-                    spdlog::info("Saved {} bytes to {}", quasar.writeToMemory(-1, sendResidualFrame, compressedData), outputPath.absolutePathStr());
+                    spdlog::info("Saved {} bytes to {}", quasar.writeToMemory(PoseReceiver::PoseInfo{0, 0, 0}, sendResidualFrame, compressedData), outputPath.absolutePathStr());
                     Path filename = (outputPath / "frame").appendToName(".bin");
                     FileIO::writeToBinaryFile(filename, compressedData.data(), compressedData.size());
                     quasar.writeTexturesToFiles(outputPath);
@@ -626,7 +626,7 @@ int main(int argc, char** argv) {
             // }
 
             quasar.generateFrame(sendResidualFrame, showNormals, showDepth);
-            quasar.sendFrame(-1, sendResidualFrame);
+            quasar.sendFrame(PoseReceiver::PoseInfo{0, 0, 0}, sendResidualFrame);
 
             std::string frameType = sendReferenceFrame ? "Reference Frame" : "Residual Frame";
             spdlog::info("======================================================");

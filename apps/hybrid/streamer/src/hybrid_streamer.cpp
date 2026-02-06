@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
 
     const double serverFPSValues[] = {0, 1, 5, 10, 15, 30};
     const char* serverFPSLabels[] = {"0 FPS", "1 FPS", "5 FPS", "10 FPS", "15 FPS", "30 FPS"};
-    int serverFPSIndex = 5;
+    int serverFPSIndex = 1;
     double rerenderIntervalMs = serverFPSIndex == 0 ? 0.0 : MILLISECONDS_IN_SECOND / serverFPSValues[serverFPSIndex];
 
     bool showVisibleLayer = true;
@@ -354,20 +354,24 @@ int main(int argc, char** argv) {
             lastRenderTime = now;
 
             // Receive pose
-            pose_id_t poseID = poseReceiver.receivePose();
+            PoseReceiver::PoseInfo poseInfo = poseReceiver.receivePose();
+            pose_id_t poseID = poseInfo.pose_id;
+            double poseSendTimestamp = poseInfo.send_timestamp;
+            double poseRecvTimestamp = poseInfo.recv_timestamp;
+
             if (poseID != -1 && poseID != prevPoseID) {
 
                 // Offset camera
-                remoteCamera.setPosition(remoteCamera.getPosition() + initialPosition);
+                remoteCamera.setPosition(remoteCamera.getPosition());
                 remoteCamera.updateViewMatrix();
 
                 renderStats = hybridStreamer.generateFrame();
 
                 // Restore camera position
-                remoteCamera.setPosition(remoteCamera.getPosition() - initialPosition);
+                remoteCamera.setPosition(remoteCamera.getPosition());
                 remoteCamera.updateViewMatrix();
 
-                hybridStreamer.sendFrame(poseID);
+                hybridStreamer.sendFrame(poseInfo);
                 prevPoseID = poseID;
             }
 
@@ -375,7 +379,7 @@ int main(int argc, char** argv) {
         }
 
         // Offset camera
-        remoteCamera.setPosition(remoteCamera.getPosition() + initialPosition);
+        remoteCamera.setPosition(remoteCamera.getPosition());
         remoteCamera.updateViewMatrix();
 
         spdlog::info("Draw scene with camera pose: {}, {}, {}", remoteCamera.getPosition().x, remoteCamera.getPosition().y, remoteCamera.getPosition().z);
@@ -387,7 +391,7 @@ int main(int argc, char** argv) {
         renderer.drawObjects(localScene, remoteCamera);
 
         // Restore camera position
-        remoteCamera.setPosition(remoteCamera.getPosition() - initialPosition);
+        remoteCamera.setPosition(remoteCamera.getPosition());
         remoteCamera.updateViewMatrix();
 
         // Render to screen

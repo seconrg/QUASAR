@@ -1,3 +1,4 @@
+#include "Utils/TimeUtils.h"
 #include <args/args.hxx>
 
 #include <OpenGLApp.h>
@@ -374,10 +375,14 @@ int main(int argc, char** argv) {
         }
 
         // Render generated meshes
+
+        double startTime = timeutils::getTimeMicros();
         quasarReceiver.setDrawState(QuadMesh::DrawState::OPAQUE); // draw opaque quads first
         renderStats = renderer.drawObjects(scene, camera);
         quasarReceiver.setDrawState(QuadMesh::DrawState::TRANSPARENT); // then draw transparent quads
         renderStats += renderer.drawObjects(scene, camera, 0);
+        double renderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+        spdlog::info("Render Time: {:.3f}ms", renderTimeMs);
 
         // Render to screen
         tonemapper.drawToScreen(renderer);

@@ -60,10 +60,10 @@ void PoseSendRecvSimulator::update(float now) {
     if (!incomingPoses.empty()) {
         double dtFuture = networkLatencyS;
         Pose poseToRecv = incomingPoses.front();
-        double timestampS = timeutils::microsToSeconds(poseToRecv.timestamp);
+        double timestampS = timeutils::microsToSeconds(poseToRecv.send_timestamp);
         if (networkLatencyS > 0 && now - timestampS < dtFuture + actualInJitter) return;
 
-        poseToRecv.timestamp = static_cast<double>(timeutils::secondsToMicros(now));
+        poseToRecv.send_timestamp = static_cast<double>(timeutils::secondsToMicros(now));
         actualInJitter = randomJitter();
 
         outPoses.push_back(poseToRecv);
@@ -89,7 +89,7 @@ bool PoseSendRecvSimulator::recvPoseToRender(Pose& pose, double now) {
         }
     }
 
-    double timestampS = timeutils::microsToSeconds(outPoses.front().timestamp);
+    double timestampS = timeutils::microsToSeconds(outPoses.front().send_timestamp);
     if (networkLatencyS > 0 && now - timestampS < dtFuture + actualOutJitter) return false;
 
     actualOutJitter = randomJitter();
@@ -193,9 +193,9 @@ bool PoseSendRecvSimulator::getPosePredicted(
     const Pose& latest, const Pose& previous, const Pose& secondPrevious,
     double targetFutureTimeS)
 {
-    double t2 = timeutils::microsToSeconds(secondPrevious.timestamp);
-    double t1 = timeutils::microsToSeconds(previous.timestamp);
-    double t0 = timeutils::microsToSeconds(latest.timestamp);
+    double t2 = timeutils::microsToSeconds(secondPrevious.send_timestamp);
+    double t1 = timeutils::microsToSeconds(previous.send_timestamp);
+    double t0 = timeutils::microsToSeconds(latest.send_timestamp);
 
     float dt1 = t1 - t2;
     float dt2 = t0 - t1;

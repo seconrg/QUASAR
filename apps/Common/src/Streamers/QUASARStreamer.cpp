@@ -579,11 +579,12 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     return renderStats;
 }
 
-void QUASARStreamer::sendFrame(pose_id_t poseID, bool createResidualFrame) {
-    stats.frameSize = writeToMemory(poseID, createResidualFrame, compressedData);
+void QUASARStreamer::sendFrame(PoseReceiver::PoseInfo poseInfo, bool createResidualFrame) {
+
+    stats.frameSize = writeToMemory(poseInfo, createResidualFrame, compressedData);
     if (!videoURL.empty() && !proxiesURL.empty()) {
         // Send atlas frame
-        videoAtlasStreamerRT.sendFrame(poseID);
+        videoAtlasStreamerRT.sendFrame(poseInfo.pose_id);
         // Send proxies
         send(compressedData);
     }
@@ -631,9 +632,10 @@ size_t QUASARStreamer::writeToFiles(const Path& outputPath) {
     return totalOutputSize;
 }
 
-size_t QUASARStreamer::writeToMemory(pose_id_t poseID, bool writeResidualFrame, std::vector<char>& outputData) {
+size_t QUASARStreamer::writeToMemory(PoseReceiver::PoseInfo poseInfo, bool writeResidualFrame, std::vector<char>& outputData) {
     // Save camera data
     Pose cameraPose;
+    pose_id_t poseID = poseInfo.pose_id;
     std::vector<char> cameraData;
     cameraPose.setProjectionMatrix(remoteCamera.getProjectionMatrix());
     cameraPose.setViewMatrix(remoteCamera.getViewMatrix());
@@ -661,6 +663,9 @@ size_t QUASARStreamer::writeToMemory(pose_id_t poseID, bool writeResidualFrame, 
         geometrySize += sizeof(uint32_t) + static_cast<uint32_t>(layerData.size());
     }
 
+    double timestamp = double(timeutils::getTimeMicros());
+    spdlog::info("Timestamp: {}", timestamp);
+
     QUASARReceiver::Header header{
         .poseID = poseID,
         .frameType = !writeResidualFrame ? QuadFrame::FrameType::REFERENCE : QuadFrame::FrameType::RESIDUAL,
@@ -672,6 +677,9 @@ size_t QUASARStreamer::writeToMemory(pose_id_t poseID, bool writeResidualFrame, 
         .cameraSize = static_cast<uint32_t>(cameraData.size()),
         .alphaSize = static_cast<uint32_t>(alphaData.size()),
         .geometrySize = geometrySize,
+        .pose_send_timestamp = poseInfo.send_timestamp,
+        .pose_recv_timestamp = poseInfo.recv_timestamp,
+        .frame_send_timestamp = timestamp,
     };
 
     spdlog::debug("Writing camera size: {:.3f}MB", static_cast<float>(header.cameraSize) / BYTES_PER_MEGABYTE);

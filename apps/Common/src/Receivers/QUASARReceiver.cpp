@@ -261,14 +261,18 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
     std::memcpy(&header, ptr, sizeof(Header));
     ptr += sizeof(Header);
 
-    spdlog::info("Loading pose with timestamp: {}", header.timestamp);
-    double currentTimestamp = timeutils::getTimeMicros();
-    double timestampDiff = timeutils::microsToMillis(currentTimestamp - header.timestamp);
-    spdlog::info("Timestamp difference: {}", timestampDiff);
-    // Log the time difference to the file
-    std::ofstream logFile("timestamp_difference.txt", std::ios::app);
-    logFile << timestampDiff << std::endl;
-    logFile.close();
+    // get the 
+    double poseSendTimestamp = header.pose_send_timestamp;
+    double poseRecvTimestamp = header.pose_recv_timestamp;
+    double frameSendTimestamp = header.frame_send_timestamp;
+    double frameRecvTimestamp = timeutils::getTimeMicros();
+
+    double timeElapse =timeutils::microsToMillis(frameRecvTimestamp - (frameSendTimestamp - poseRecvTimestamp) - poseSendTimestamp);
+    spdlog::info("Time elapse: {}", timeElapse);
+    // write to file 
+    std::ofstream timeElapseFile("time_elapse.txt", std::ios::app);
+    timeElapseFile << timeElapse << std::endl;
+    timeElapseFile.close();
 
     size_t expectedSize = header.getSize();
     if (inputData.size() < expectedSize) {

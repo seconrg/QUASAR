@@ -53,7 +53,7 @@ public:
         if (res != prevPoses.end()) { // found
             *pose = res->second;
             if (elapsedTime) {
-                *elapsedTime = timeutils::microsToMillis(timeutils::getTimeMicros() - pose->timestamp);
+                *elapsedTime = timeutils::microsToMillis(timeutils::getTimeMicros() - pose->send_timestamp);
             }
 
             return true;
@@ -102,7 +102,8 @@ public:
             //     Return false;
             // }
         }
-        currPose.timestamp = timeutils::getTimeMicros();
+        // currPose.timestamp = timeutils::getTimeMicros();
+        currPose.send_timestamp = timeutils::getTimeMicros();
         // currPose.timestamp = static_cast<PerspectiveCamera*>(camera)->getTimestamp();
         send((uint8_t*)&currPose);
 

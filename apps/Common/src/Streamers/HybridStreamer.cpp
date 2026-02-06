@@ -599,10 +599,11 @@ RenderStats HybridStreamer::generateFrame() {
     return renderStats;
 }
 
-void HybridStreamer::sendFrame(pose_id_t poseID) {
+void HybridStreamer::sendFrame(PoseReceiver::PoseInfo poseInfo) {
 
     // write alpha atlas and compressed depth offset to memory
-    timeStats.frameSize = writeToMemory(poseID, compressedData);
+    pose_id_t poseID = poseInfo.pose_id;
+    timeStats.frameSize = writeToMemory(poseInfo, compressedData);
 
     visibleVideoStreamerRT.sendFrame(poseID);
     visibleVideoStreamerWideFOV.sendFrame(poseID);
@@ -617,11 +618,12 @@ void HybridStreamer::sendFrame(pose_id_t poseID) {
     }
 }
 
-size_t HybridStreamer::writeToMemory(pose_id_t poseID, std::vector<char>& outputData) {
+size_t HybridStreamer::writeToMemory(PoseReceiver::PoseInfo poseInfo, std::vector<char>& outputData) {
 
     // Save camera data
     spdlog::info("Writing camera data to memory");
     Pose cameraPose;
+    pose_id_t poseID = poseInfo.pose_id;
     std::vector<char> cameraData;
     cameraPose.setProjectionMatrix(remoteCamera.getProjectionMatrix());
     cameraPose.setViewMatrix(remoteCamera.getViewMatrix());
@@ -642,6 +644,9 @@ size_t HybridStreamer::writeToMemory(pose_id_t poseID, std::vector<char>& output
         proxySize += sizeof(uint32_t) + static_cast<uint32_t>(proxyMetadata.size());
     }
 
+    double timestamp = double(timeutils::getTimeMicros());
+    spdlog::info("Timestamp: {}", timestamp);
+
     QUASARReceiver::Header header{
         .poseID = poseID,
         .frameType = QuadFrame::FrameType::REFERENCE,
@@ -653,7 +658,9 @@ size_t HybridStreamer::writeToMemory(pose_id_t poseID, std::vector<char>& output
         .cameraSize = static_cast<uint32_t>(cameraData.size()),
         .alphaSize = static_cast<uint32_t>(alphaData.size()),
         .geometrySize = proxySize,
-        .timestamp = double(timeutils::getTimeMicros()),
+        .pose_send_timestamp = poseInfo.send_timestamp,
+        .pose_recv_timestamp = poseInfo.recv_timestamp,
+        .frame_send_timestamp = timestamp,
     };
 
     outputData.resize(header.getSize());

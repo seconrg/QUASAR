@@ -358,16 +358,20 @@ int main(int argc, char** argv) {
             totalDT = 0.0;
             lastRenderTime = now;
 
-            pose_id_t poseID = poseReceiver.receivePose();
+            PoseReceiver::PoseInfo poseInfo = poseReceiver.receivePose();
+            pose_id_t poseID = poseInfo.pose_id;
+            double poseSendTimestamp = poseInfo.send_timestamp;
+            double poseRecvTimestamp = poseInfo.recv_timestamp;
+
             if (poseID != -1 && poseID != prevPoseID) {
                 // Offset camera
-                camera.setPosition(camera.getPosition() + initialPosition);
+                camera.setPosition(camera.getPosition());
                 camera.updateViewMatrix();
 
                 renderStats = quasar.generateFrame(sendResidualFrame, showNormals, showDepth);
 
                 // Restore camera position
-                camera.setPosition(camera.getPosition() - initialPosition);
+                camera.setPosition(camera.getPosition());
                 camera.updateViewMatrix();
 
                 std::string frameType = sendReferenceFrame ? "Reference Frame" : "Residual Frame";
@@ -386,7 +390,7 @@ int main(int argc, char** argv) {
                 spdlog::info("Num Proxies: {}Proxies", quasar.stats.proxySizes.numQuads);
 
                 prevPoseID = poseID;
-                quasar.sendFrame(poseID, sendResidualFrame);
+                quasar.sendFrame(poseInfo, sendResidualFrame);
 
                 showResidualFrame = sendResidualFrame;
                 sendReferenceFrame = false;
@@ -415,7 +419,7 @@ int main(int argc, char** argv) {
         quasar.residualFrameWireframeLocal.visible = quasar.residualFrameNodeLocal.visible && showWireframe;
 
         // Offset camera
-        camera.setPosition(camera.getPosition() + initialPosition);
+        camera.setPosition(camera.getPosition());
         camera.updateViewMatrix();
 
         // Render generated meshes
@@ -425,7 +429,7 @@ int main(int argc, char** argv) {
         renderer.drawObjects(localScene, camera, 0);
 
         // Restore camera position
-        camera.setPosition(camera.getPosition() - initialPosition);
+        camera.setPosition(camera.getPosition());
         camera.updateViewMatrix();
 
         // Render to screen

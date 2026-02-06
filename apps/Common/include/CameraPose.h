@@ -28,12 +28,13 @@ struct Pose {
             glm::mat4 pad2;
         } mono;
     };
-    double timestamp;
+    double send_timestamp;
+    double recv_timestamp;
 
     Pose() = default;
     Pose(const glm::mat4& view, const glm::mat4& proj, double timestamp)
             : mono{view, glm::mat4(1.0f), proj, glm::mat4(1.0f)}
-            , timestamp(timestamp) {}
+            , send_timestamp(timestamp) {}
 
     void setViewMatrix(const glm::mat4& view) {
         mono.view = view;

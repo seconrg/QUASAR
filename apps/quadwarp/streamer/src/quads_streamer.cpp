@@ -298,7 +298,7 @@ int main(int argc, char** argv) {
             totalDT = 0.0;
             lastRenderTime = now;
 
-            pose_id_t poseID = poseReceiver.receivePose();
+            pose_id_t poseID = poseReceiver.receivePose().pose_id;
             if (poseID != -1 && poseID != prevPoseID) {
                 // Offset camera
                 camera.setPosition(camera.getPosition() + initialPosition);

@@ -6,6 +6,7 @@
 #include <Quads/FrameGenerator.h>
 #include <Receivers/HybridReceiver.h>
 #include <Receivers/QUASARReceiver.h>
+#include <Receivers/PoseReceiver.h>
 #include <Renderers/DepthPeelingRenderer.h>
 #include <Networking/DataStreamerTCP.h>
 
@@ -140,10 +141,10 @@ public:
     ~HybridStreamer() = default;
 
     RenderStats generateFrame();
-    void sendFrame(pose_id_t poseID);
+    void sendFrame(PoseReceiver::PoseInfo poseInfo);
     
     size_t writeToFiles(const Path& outputPath);
-    size_t writeToMemory(pose_id_t poseID, std::vector<char>& outputData);
+    size_t writeToMemory(PoseReceiver::PoseInfo poseInfo, std::vector<char>& outputData);
 
     void setViewSphereDiameter(float viewSphereDiameter);
 

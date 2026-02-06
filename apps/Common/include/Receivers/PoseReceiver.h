@@ -48,8 +48,10 @@ public:
         Pose newPose;
         std::memcpy(&newPose, data.data(), sizeof(Pose));
 
+        newPose.recv_timestamp = timeutils::getTimeMicros();
+
         // Avoid adding outdated poses
-        if (!poseQueue.empty() && newPose.timestamp - poseQueue.back().timestamp <= poseDropThresUs) {
+        if (!poseQueue.empty() && newPose.send_timestamp - poseQueue.back().send_timestamp <= poseDropThresUs) {
             return;
         }
 
@@ -58,12 +60,19 @@ public:
             poseQueue.pop_front();
         }
     }
-
-    pose_id_t receivePose(bool setProj = true) {
+    
+    // 
+    typedef struct PoseInfo {
+        double send_timestamp;
+        double recv_timestamp;
+        pose_id_t pose_id;
+    } poseInfo;
+    
+    poseInfo receivePose(bool setProj = true) {
         std::lock_guard<std::mutex> lock(m);
 
         if (poseQueue.empty()) {
-            return -1;
+            return poseInfo{0.0, 0.0, pose_id_t(-1)};
         }
 
         Pose pose = poseQueue.front();
@@ -84,17 +93,7 @@ public:
             perspectiveCamera->setViewMatrix(pose.mono.view);
         }
 
-        // get the pose timestamp
-        double poseTimestamp = pose.timestamp;
-        double currentTimestamp = timeutils::getTimeMicros();
-        double timestampDiff =timeutils::microsToMillis( currentTimestamp - poseTimestamp);
-        spdlog::info("Timestamp difference: {}", timestampDiff);
-        // Log the time difference to the file
-        std::ofstream logFile("timestamp_difference.txt", std::ios::app);
-        logFile << timestampDiff << std::endl;
-        logFile.close();
-
-        return pose.id;
+        return poseInfo{pose.send_timestamp, pose.recv_timestamp, pose.id};
     }
 
 private:
