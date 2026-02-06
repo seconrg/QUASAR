@@ -263,7 +263,7 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
 
     spdlog::info("Loading pose with timestamp: {}", header.timestamp);
     double currentTimestamp = timeutils::getTimeMicros();
-    double timestampDiff = currentTimestamp - header.timestamp;
+    double timestampDiff = timeutils::microsToMillis(currentTimestamp - header.timestamp);
     spdlog::info("Timestamp difference: {}", timestampDiff);
     // Log the time difference to the file
     std::ofstream logFile("timestamp_difference.txt", std::ios::app);
