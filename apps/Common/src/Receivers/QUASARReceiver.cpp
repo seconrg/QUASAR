@@ -267,11 +267,13 @@ QuadFrame::FrameType QUASARReceiver::loadFromMemory(const std::vector<char>& inp
     double frameSendTimestamp = header.frame_send_timestamp;
     double frameRecvTimestamp = timeutils::getTimeMicros();
 
-    double timeElapse =timeutils::microsToMillis(frameRecvTimestamp - (frameSendTimestamp - poseRecvTimestamp) - poseSendTimestamp);
+    double timeElapse = timeutils::microsToMillis(frameRecvTimestamp - (frameSendTimestamp - poseRecvTimestamp) - poseSendTimestamp);
+    double end2endTime = timeutils::microsToMillis(frameRecvTimestamp - poseSendTimestamp);
     spdlog::info("Time elapse: {}", timeElapse);
+    spdlog::info("End2end time: {}", end2endTime);
     // write to file 
-    std::ofstream timeElapseFile("time_elapse.txt", std::ios::app);
-    timeElapseFile << timeElapse << std::endl;
+    std::ofstream timeElapseFile("quasar_time_elapse.csv", std::ios::app);
+    timeElapseFile << timeElapse << "," << end2endTime << "," << frameRecvTimestamp << "," << poseSendTimestamp << "," << poseRecvTimestamp << "," << frameSendTimestamp << std::endl;
     timeElapseFile.close();
 
     size_t expectedSize = header.getSize();

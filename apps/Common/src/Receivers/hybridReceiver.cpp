@@ -346,10 +346,11 @@ QuadFrame::FrameType HybridReceiver::loadFromMemory(const std::vector<char>& inp
     double frameRecvTimestamp = timeutils::getTimeMicros();
 
     double timeElapse =timeutils::microsToMillis(frameRecvTimestamp - (frameSendTimestamp - poseRecvTimestamp) - poseSendTimestamp);
+    double end2endTime = timeutils::microsToMillis(frameRecvTimestamp - poseSendTimestamp);
     spdlog::info("Time elapse: {}", timeElapse);
     // write to file 
-    std::ofstream timeElapseFile("time_elapse.txt", std::ios::app);
-    timeElapseFile << timeElapse << std::endl;
+    std::ofstream timeElapseFile("hybrid_time_elapse.csv", std::ios::app);
+    timeElapseFile << timeElapse << "," << end2endTime << "," << frameRecvTimestamp << "," << poseSendTimestamp << "," << poseRecvTimestamp << "," << frameSendTimestamp << std::endl;
     timeElapseFile.close();
 
     size_t expectedSize = header.getSize();
