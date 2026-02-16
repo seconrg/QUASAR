@@ -13,14 +13,21 @@ HybridReceiver::HybridReceiver(
         const glm::uvec2& remoteGBufferSize, 
         uint depthFactor,
         uint vertexGroupSize,
-        QuadSet& quadSet, uint hiddenLayers, 
+        QuadSet& quadSet, uint hiddenLayers,
+        PoseStreamer& poseStreamer,
+        double& elapsedTimeColor, 
+        double& elapsedTimeDepth,
         const std::string& videoAtlasURL, 
         const std::string& proxiesURL,
         const std::string& videoVisibleURL,
         const std::string& depthVisibleURL,
         const std::string& videoVisibleWideFovURL,
-        const std::string& depthVisibleWideFovURL)
-    : vertexGroupSize(vertexGroupSize)
+        const std::string& depthVisibleWideFovURL,
+        GLFWwindow* window)
+    : poseStreamer(poseStreamer)
+    , elapsedTimeColor(elapsedTimeColor)
+    , elapsedTimeDepth(elapsedTimeDepth)
+    , vertexGroupSize(vertexGroupSize)
     , depthFactor(depthFactor)
     , adjustedSize(remoteGBufferSize / vertexGroupSize)
     , hiddenLayers(hiddenLayers)
@@ -100,7 +107,21 @@ HybridReceiver::HybridReceiver(
         .material = &visibleMeshWideFOVMaterial,
         .usage = GL_DYNAMIC_DRAW
     })
-    ,QUASARReceiver(quadSet, hiddenLayers, videoAtlasURL, proxiesURL)
+    , visibleMeshBackgroundMaterial({ .baseColorTexture = &visibleTexture })
+    , visibleMeshBackground({
+        .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1),
+        .maxIndices = (adjustedSize.x * adjustedSize.y + adjustedSize.x - 1) * 2 * 3,
+        .material = &visibleMeshBackgroundMaterial,
+        .usage = GL_DYNAMIC_DRAW
+    })
+    , visibleMeshWideFOVBackgroundMaterial({ .baseColorTexture = &visibleTextureWideFOV })
+    , visibleMeshWideFOVBackground({
+        .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1),
+        .maxIndices = (adjustedSize.x * adjustedSize.y + adjustedSize.x - 1) * 2 * 3,
+        .material = &visibleMeshWideFOVBackgroundMaterial,
+        .usage = GL_DYNAMIC_DRAW
+    })
+    ,QUASARReceiver(quadSet, hiddenLayers, videoAtlasURL, proxiesURL, window)
 {
     // Initialize visible layers for meshwarp generation
     meshFromBC4Shader.bind();
@@ -112,6 +133,21 @@ HybridReceiver::HybridReceiver(
     meshWarpReconstructShader.setBool("unlinearizeDepth", true);
     meshWarpReconstructShader.setVec2("depthMapSize", glm::vec2(depthTexture.width, depthTexture.height));
     meshWarpReconstructShader.setUint("vertexGroupSize", vertexGroupSize);
+
+    meshesBackground.reserve(hiddenLayers);
+    glm::vec4 textureExtent(0.0f, 0.0f, 0.5f, 1.0f / 3.0f);
+    for (int layer = 0; layer < hiddenLayers; layer++) {
+        meshesBackground.emplace_back(
+            quadSet, videoAtlasTexture, alphaAtlasTexture, textureExtent);
+
+        textureExtent.x += 0.5f;
+        if (textureExtent.x >= 1.0f) {
+            textureExtent.x = 0.0f;
+            textureExtent.y += 1.0f / 3.0f;
+        }
+        textureExtent.z = textureExtent.x + 0.5f;
+        textureExtent.w = textureExtent.y + 1.0f / 3.0f;
+    }
 
     // Initialize CSV file for stats
     statsCSVFileName = "hybrid_receiver_stats.csv";
@@ -126,12 +162,24 @@ HybridReceiver::HybridReceiver(
 
 }
 
-void HybridReceiver::updateMesh(bool isWideFOV) {
+void HybridReceiver::updateMesh(bool isWideFOV, bool useBackgroundMesh) {
     // Set shader uniforms
 
     PerspectiveCamera& cameraInUse = isWideFOV ? remoteCameraWideFOV : remoteCamera;
-    Mesh& meshInUse = isWideFOV ? visibleMeshWideFOV : visibleMesh;
+    if (useBackgroundMesh) {
+        spdlog::info("Using background mesh");
+    } else {
+        spdlog::info("Using visible mesh");
+    }
+    Mesh& meshInUse = useBackgroundMesh ? (isWideFOV ? visibleMeshWideFOVBackground : 
+                                                       visibleMeshBackground)
+                                        : (isWideFOV ? visibleMeshWideFOV : 
+                                                       visibleMesh);
+    // Mesh& meshInUse = isWideFOV ? visibleMeshWideFOV : visibleMesh;
+    
     BC4DepthVideoTexture& depthTextureInUse = isWideFOV ? depthTextureWideFOV : depthTexture;
+    // visibleTextureWideFOV.writeToPNG("visibleTextureWideFOV.png");
+    // visibleTexture.writeToPNG("visibleTexture.png");
     if (isWideFOV) {
         visibleTextureWideFOV.bind();
         poseIdColor = visibleTextureWideFOV.draw();
@@ -209,12 +257,12 @@ void HybridReceiver::recvData(
     
     double startTime = timeutils::getTimeMicros();
     // Update both visible and wide FOV meshes
-    updateMesh(true);
+    updateMesh(true, false);
     
     timeStats.meshwarpReconstructWideFovTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
     startTime = timeutils::getTimeMicros();
     
-    updateMesh(false);
+    updateMesh(false, false);
     
     timeStats.meshwarpReconstructVisibleTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
     // Wait for a frame that has been written to
@@ -247,7 +295,7 @@ void HybridReceiver::recvData(
     glFinish();
 
     // Reconstruct meshes from frame
-    TimeStats timeStatsDp = reconstructHiddenLayers(frame);
+    TimeStats timeStatsDp = reconstructHiddenLayers(frame, false);
 
     // Update time stats
     timeStats.totalTimeMs += timeStats.meshwarpReconstructVisibleTimeMs;
@@ -281,7 +329,7 @@ void HybridReceiver::recvData(
 }
 
 
-HybridReceiver::TimeStats HybridReceiver::reconstructHiddenLayers(std::shared_ptr<Frame> frame) {
+HybridReceiver::TimeStats HybridReceiver::reconstructHiddenLayers(std::shared_ptr<Frame> frame, bool useBackgroundMesh) {
     
     TimeStats timeStats;
     timeStats.decompressTimeMsByLayer.resize(hiddenLayers);
@@ -290,10 +338,10 @@ HybridReceiver::TimeStats HybridReceiver::reconstructHiddenLayers(std::shared_pt
 
     frame->cameraPose.copyPoseToCamera(remoteCamera);
 
-    // spdlog::info("    Loading camera pose: {}, {}, {}", remoteCamera.getPosition().x, remoteCamera.getPosition().y, remoteCamera.getPosition().z);
-    // spdlog::info("    Loading camera rotation: {}, {}, {}", remoteCamera.getRotationEuler().x, remoteCamera.getRotationEuler().y, remoteCamera.getRotationEuler().z);
-    // spdlog::info("    Loading camera fovy: {}", remoteCamera.getFovyDegrees());
     const glm::vec2& gBufferSize = quadSet.getSize();
+
+    std::vector<QuadMesh>& meshesInUse = useBackgroundMesh ? meshesBackground : meshes;
+    // std::vector<QuadMesh>& meshesInUse = meshes;
 
     for (int layer = 0; layer < hiddenLayers; layer++) {
         double startTime = timeutils::getTimeMicros();
@@ -305,16 +353,16 @@ HybridReceiver::TimeStats HybridReceiver::reconstructHiddenLayers(std::shared_pt
         timeStats.decompressTimeMsByLayer[layer] = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
         startTime = timeutils::getTimeMicros();
 
-        meshes[layer].appendQuads(quadSet, gBufferSize);
+        meshesInUse[layer].appendQuads(quadSet, gBufferSize);
         glFinish();
 
         // spdlog::info("    Appending quads for layer {} took {} ms", layer, timeutils::microsToMillis(timeutils::getTimeMicros() - startTime));
         double tmpStartTime = timeutils::getTimeMicros();
-        meshes[layer].createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
+        meshesInUse[layer].createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
         glFinish();
         // spdlog::info("    Creating mesh from proxies for layer {} took {} ms", layer, timeutils::microsToMillis(timeutils::getTimeMicros() - tmpStartTime));
 
-        auto meshBufferSizes = meshes[layer].getBufferSizes();
+        auto meshBufferSizes = meshesInUse[layer].getBufferSizes();
         stats.totalTriangles += meshBufferSizes.numIndices / 3;
         stats.sizes += sizes;
 
@@ -362,12 +410,12 @@ QuadFrame::FrameType HybridReceiver::loadFromMemory(const std::vector<char>& inp
     }
 
     std::shared_ptr<Frame> frame;
-    {
-        std::unique_lock<std::mutex> lock(m);
-        cv.wait(lock, [&]() { return frameFree != nullptr; });
-        frame = frameFree;
-        frameFree.reset();
-    }
+    // {
+    //     std::unique_lock<std::mutex> lock(m);
+    //     cv.wait(lock, [&]() { return frameFree != nullptr; });
+    frame = frameFree;
+    // frameFree.reset();
+    // }
 
     frame->poseID = header.poseID;
     frame->frameType = header.frameType;
@@ -426,11 +474,87 @@ QuadFrame::FrameType HybridReceiver::loadFromMemory(const std::vector<char>& inp
     stats.loadTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
     // Signal that frame is ready
-    {
-        std::lock_guard<std::mutex> lock(m);
-        framePending = frame;
+    // {
+    //     std::lock_guard<std::mutex> lock(m);
+    //     framePending = frame;
+    // }
+    // cv.notify_one();
+
+    // after the frame is ready, update meshes
+    bool useBackgroundMesh = true;
+    {   
+        std::lock_guard<std::mutex> lock(useBackgroundProcessingMutex);
+        useBackgroundMesh = useBackgroundProcessing;
     }
-    cv.notify_one();
+    // update meshes
+
+    struct TimeStats timeStats;
+
+    // Get poses for the frames
+    poseStreamer.getPose(poseIdColor, &colorFramePose, &elapsedTimeColor);
+    poseStreamer.getPose(poseIdDepth, &depthFramePose, &elapsedTimeDepth);
+    
+    if (visibleTexture.getLatestPoseID() == -1 || 
+        visibleTextureWideFOV.getLatestPoseID() == -1 || 
+        videoAtlasTexture.getLatestPoseID() == -1) {
+        spdlog::info("No frame pending, waiting for frame");
+        return QuadFrame::FrameType::NONE;
+    } else {
+        // print out the latest poseID
+        spdlog::info("Latest poseID for visible texture: {}", visibleTexture.getLatestPoseID());
+        spdlog::info("Latest poseID for visible texture wide FOV: {}", visibleTextureWideFOV.getLatestPoseID());
+        spdlog::info("Latest poseID for video atlas texture: {}", videoAtlasTexture.getLatestPoseID());
+    }
+
+    startTime = timeutils::getTimeMicros();
+    // Update both visible and wide FOV meshes
+    updateMesh(true, useBackgroundProcessing);
+    
+    timeStats.meshwarpReconstructWideFovTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+    startTime = timeutils::getTimeMicros();
+    
+    updateMesh(false, useBackgroundProcessing);
+    
+    timeStats.meshwarpReconstructVisibleTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
+     // Wait for a frame that has been written to
+    //  std::shared_ptr<Frame> frame;
+    //  {
+    //      std::unique_lock<std::mutex> lock(m);
+    //      if (!framePending) {
+    //          // No new frame pending, not updating the mesh, return
+    //          spdlog::info("No frame pending, waiting for frame");
+    //          return;
+    //      }
+ 
+    //      if (videoAtlasTexture.getLatestPoseID() < framePending->poseID) { // Video is behind, wait until video catches up
+    //          spdlog::info("Video is behind, waiting for video to catch up");
+    //          return;
+    //      }
+ 
+    //      frame = framePending;
+    //      framePending.reset();
+    //      frameInUse = frame;
+    //  }
+ 
+    // Update color texture
+    videoAtlasTexture.bind();
+    videoAtlasTexture.draw(frame->poseID);
+
+    // Update alpha texture
+    alphaAtlasTexture.bind();
+    alphaAtlasTexture.loadFromData(frame->bufferPool.alphaData.data());
+
+    glFinish();
+ 
+     // Reconstruct meshes from frame
+    TimeStats timeStatsDp = reconstructHiddenLayers(frame, useBackgroundMesh);
+    
+    {
+        std::lock_guard<std::mutex> lock(useBackgroundProcessingMutex);
+        useBackgroundProcessing = !useBackgroundProcessing;
+    }
+
+
 
     return frame->frameType;
 

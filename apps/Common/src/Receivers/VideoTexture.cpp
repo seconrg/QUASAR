@@ -218,6 +218,10 @@ void VideoTexture::receiveFrame() {
         }
 
         // Read the pose ID from the frame
+        // also the current thread id
+        std::ostringstream threadIdStream;
+        threadIdStream << std::this_thread::get_id();
+        spdlog::info("Unpacking pose ID from frame. Thread ID: {}", threadIdStream.str());
         const pose_id_t poseID = unpackPoseIDFromFrame(map.data, videoWidth, videoHeight);
 
         {
@@ -266,6 +270,9 @@ void VideoTexture::receiveFrame() {
 
         stats.totalRecvTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - prevTime);
         prevTime = timeutils::getTimeMicros();
+        spdlog::info("Finished receiving frame. Thread ID: {}", threadIdStream.str());
+        threadIdStream.str("");
+        threadIdStream.clear();
     }
 }
 

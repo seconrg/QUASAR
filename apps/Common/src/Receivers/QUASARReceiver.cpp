@@ -84,6 +84,87 @@ QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::stri
     }
 }
 
+QUASARReceiver::QUASARReceiver(QuadSet& quadSet, uint maxLayers, const std::string& videoURL, const std::string& proxiesURL, GLFWwindow* window)
+    : quadSet(quadSet)
+    , maxLayers(maxLayers)
+    , videoURL(videoURL)
+    , proxiesURL(proxiesURL)
+    , remoteCamera(quadSet.getSize())
+    , remoteCameraWideFOV(quadSet.getSize())
+    , videoAtlasTexture({
+        .width = 2 * quadSet.getSize().x,
+        .height = 3 * quadSet.getSize().y,
+        .internalFormat = GL_SRGB8,
+        .format = GL_RGB,
+        .type = GL_UNSIGNED_BYTE,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+        .minFilter = GL_NEAREST,
+        .magFilter = GL_NEAREST,
+    }, videoURL)
+    , alphaAtlasTexture({
+        .width = 2 * quadSet.getSize().x,
+        .height = 3 * quadSet.getSize().y,
+        .internalFormat = GL_R8,
+        .format = GL_RED,
+        .type = GL_UNSIGNED_BYTE,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+        .minFilter = GL_NEAREST,
+        .magFilter = GL_NEAREST,
+    })
+    , alphaCodec(alphaAtlasTexture.width, alphaAtlasTexture.height)
+    , residualFrameMesh(quadSet, videoAtlasTexture, alphaAtlasTexture)
+    , bufferPool(quadSet.getSize(), maxLayers)
+    , DataReceiverTCP(proxiesURL, false, window)
+{
+    meshes.reserve(maxLayers);
+    referenceFrames.resize(maxLayers);
+
+    statsCSVFileName = "QUASARReceiver_stats.csv";
+    statsCSVFile.open(statsCSVFileName, std::ios::app);
+    statsCSVFile << "frameID,loadTimeMs,decompressTimeMs";
+    for (int layer = 0; layer < maxLayers-1; layer++) {
+        statsCSVFile << "layer" << layer << "_transferTimeMs,layer" << layer << "_createMeshTimeMs," ;
+    }
+    statsCSVFile << ",layer" << maxLayers-1 << "_transferTimeMs,layer" << maxLayers-1 << "_createMeshTimeMs" << std::endl;
+    statsCSVFile.close();
+
+    remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
+    remoteCameraPrev.setViewMatrix(remoteCamera.getViewMatrix());
+
+    stats.transferTimeMsByLayer.resize(maxLayers);
+    stats.createMeshTimeMsByLayer.resize(maxLayers);
+
+    // Untile texture atlas
+    glm::vec4 textureExtent(0.0f, 0.0f, 0.5f, 1.0f / 3.0f);
+    for (int layer = 0; layer < maxLayers; layer++) {
+        meshes.emplace_back(
+            quadSet, videoAtlasTexture, alphaAtlasTexture, textureExtent);
+
+        textureExtent.x += 0.5f;
+        if (textureExtent.x >= 1.0f) {
+            textureExtent.x = 0.0f;
+            textureExtent.y += 1.0f / 3.0f;
+        }
+        textureExtent.z = textureExtent.x + 0.5f;
+        textureExtent.w = textureExtent.y + 1.0f / 3.0f;
+    }
+    residualFrameMesh.setTextureExtent(textureExtent);
+
+    frameInUse = std::make_shared<Frame>(bufferPool);
+    framePending = std::make_shared<Frame>(bufferPool);
+
+    frameFree = framePending;
+    cv.notify_one();
+
+    threadPool = std::make_unique<BS::thread_pool<>>(4);
+
+    if (!proxiesURL.empty()) {
+        spdlog::info("Created QUASARReceiver that recvs from URL: tcp://{}", proxiesURL);
+    }
+}
+
 QUASARReceiver::QUASARReceiver(
         QuadSet& quadSet,
         uint maxLayers, float remoteFOV, float remoteFOVWide,

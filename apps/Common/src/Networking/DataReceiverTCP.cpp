@@ -19,6 +19,19 @@ DataReceiverTCP::DataReceiverTCP(const std::string& url, bool nonBlocking)
     dataRecvingThread = std::thread(&DataReceiverTCP::recvData, this);
 }
 
+DataReceiverTCP::DataReceiverTCP(const std::string& url, bool nonBlocking, GLFWwindow* window)
+    : url(url)
+{
+    if (url.empty()) {
+        return;
+    }
+    
+    running = true;
+    socket = std::make_unique<SocketTCP>(nonBlocking);
+
+    dataRecvingThread = std::thread(&DataReceiverTCP::recvDataWithGLFW, this, window);
+}
+
 DataReceiverTCP::~DataReceiverTCP() {
     stop();
 }
@@ -101,4 +114,22 @@ void DataReceiverTCP::recvData() {
     }
 
     socket->close();
+}
+
+
+
+void DataReceiverTCP::recvDataWithGLFW(GLFWwindow* window) {
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); // Invisible window
+    GLFWwindow* workerContext = glfwCreateWindow(1920, 1080, "Worker", NULL, window);
+    if (!workerContext) {
+        spdlog::error("Failed to create worker context!");
+        return;
+    }
+
+    // 2. Make context current on THIS thread
+    glfwMakeContextCurrent(workerContext);
+
+    // 3. Use the normal recvData function
+    recvData();
+
 }

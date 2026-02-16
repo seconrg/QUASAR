@@ -29,10 +29,17 @@
 #include <PoseSendRecvSimulator.h>
 using namespace quasar;
 
+static void glfw_error_callback(int error, const char* description)
+{
+    fprintf(stderr, "Glfw Error %d: %s\n", error, description);
+}
+
 int main(int argc, char** argv) {
     Config config{};
     config.title = "Hybrid Simulator";
     config.sortTransparent = false;
+
+    glfwSetErrorCallback(glfw_error_callback);
 
     args::ArgumentParser parser(config.title);
     args::HelpFlag help(parser, "help", "Display this help menu", {'h', "help"});

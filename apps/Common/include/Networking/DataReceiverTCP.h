@@ -6,6 +6,7 @@
 #include <thread>
 #include <string>
 #include <functional>
+#include <Windowing/GLFWWindow.h>
 
 #include <Networking/Socket.h>
 
@@ -19,6 +20,7 @@ public:
     };
 
     DataReceiverTCP(const std::string& url, bool nonBlocking = false);
+    DataReceiverTCP(const std::string& url, bool nonBlocking, GLFWwindow* window);
     virtual ~DataReceiverTCP();
 
     void stop();
@@ -37,6 +39,7 @@ private:
     std::vector<char> data;
 
     void recvData();
+    void recvDataWithGLFW(GLFWwindow* window);
 };
 
 } // namespace quasar

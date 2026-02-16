@@ -44,6 +44,9 @@ public:
 
     uint hiddenLayers;
 
+    std::mutex useBackgroundProcessingMutex;
+    bool useBackgroundProcessing = false;
+
     // CSV File for stats
     std::ofstream statsCSVFile;
     std::string statsCSVFileName;
@@ -55,6 +58,10 @@ public:
     BC4DepthVideoTexture depthTexture;
     BC4DepthVideoTexture depthTextureWideFOV;
 
+    const PoseStreamer& poseStreamer;
+    double& elapsedTimeColor;
+    double& elapsedTimeDepth;
+
     bool sync = true;
     Pose colorFramePose, depthFramePose;
     pose_id_t poseIdColor = -1, poseIdDepth = -1;
@@ -65,18 +72,25 @@ public:
         uint vertexGroupSize,
         QuadSet& quadSet, 
         uint hiddenLayers, 
+        PoseStreamer& poseStreamer,
+        double& elapsedTimeColor, 
+        double& elapsedTimeDepth,
         const std::string& videoAtlasURL, 
         const std::string& proxiesURL,
         const std::string& videoVisibleURL,
         const std::string& depthVisibleURL,
         const std::string& videoVisibleWideFovURL,
-        const std::string& depthVisibleWideFovURL);
+        const std::string& depthVisibleWideFovURL,
+        GLFWwindow* window);
     ~HybridReceiver() = default;
 
     PerspectiveCamera& getRemoteCamera() { return remoteCamera; }
 
     Mesh& getVisibleMesh() { return visibleMesh; }
     Mesh& getVisibleMeshWideFOV() { return visibleMeshWideFOV; }
+    Mesh& getVisibleMeshBackground() { return visibleMeshBackground; }
+    Mesh& getVisibleMeshWideFOVBackground() { return visibleMeshWideFOVBackground; }
+    QuadMesh& getMeshBackground(int layer) { return meshesBackground[layer]; }
 
     void recvData(const PoseStreamer& poseStreamer,
                   double& elapsedTimeColor, 
@@ -84,10 +98,10 @@ public:
 
     void recvData();
 
-    void updateMesh(bool isWideFOV);
+    void updateMesh(bool isWideFOV, bool useBackgroundMesh);
 
     QuadFrame::FrameType loadFromMemory(const std::vector<char>& inputData) override;
-    struct TimeStats reconstructHiddenLayers(std::shared_ptr<Frame> frame);
+    struct TimeStats reconstructHiddenLayers(std::shared_ptr<Frame> frame, bool useBackgroundMesh);
 
 
 private:
@@ -98,8 +112,21 @@ private:
     // Meshwarp shader for depth peeling
     Mesh visibleMesh;
     Mesh visibleMeshWideFOV;
+    // Mesh for background processing
+    Mesh visibleMeshBackground;
+    Mesh visibleMeshWideFOVBackground;
+    std::vector<QuadMesh> meshesBackground;
+    
+    // check which mesh to use for background processing
+    // the other mesh is used for rendering
+    
+    // mutex for protecting the boolean
+
     UnlitMaterial visibleMeshMaterial;
     UnlitMaterial visibleMeshWideFOVMaterial;
+
+    UnlitMaterial visibleMeshBackgroundMaterial;
+    UnlitMaterial visibleMeshWideFOVBackgroundMaterial;
 
     ComputeShader meshFromBC4Shader;
     ComputeShader meshWarpReconstructShader;

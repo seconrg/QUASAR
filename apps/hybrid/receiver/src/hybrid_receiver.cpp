@@ -156,25 +156,48 @@ int main(int argc, char** argv) {
     spdlog::info("Creating HybridReceiver with depth wide fov url: {}", depthWideFovURL);
     spdlog::info("Creating HybridReceiver with pose url: {}", poseURL);
     spdlog::info("Creating HybridReceiver with video atlas url: {}", videoAtlasURL);
+
+    PoseStreamer poseStreamer(&camera, poseURL);
+
+    double elapsedTimeColor=0.0, elapsedTimeDepth = 0.0;
+
+
     HybridReceiver hybridReceiver(
         remoteWindowSize,
         depthFactor,
         vertexGroupSize,
         quadSet, 
         hiddenLayers,
+        poseStreamer,
+        elapsedTimeColor,
+        elapsedTimeDepth,
         videoAtlasURL, 
         proxiesURL, 
         videoURL,
         depthURL,
         videoWideFovURL,
-        depthWideFovURL);
+        depthWideFovURL, 
+        window->window
+    );
     
-    PoseStreamer poseStreamer(&camera, poseURL);
 
     // add in reverse order to have correct layering
     Node wideFovNode(&hybridReceiver.getVisibleMeshWideFOV());
     std::vector<Node> refNodes(hiddenLayers);
-    Node visibleNode(&hybridReceiver.getVisibleMesh());
+    std::vector<Node> refNodesBackground(hiddenLayers);
+    Node visibleNode(&hybridReceiver.getVisibleMesh()); 
+
+    Node visibleMeshBackgroundNode(&hybridReceiver.getVisibleMeshBackground());
+    Node visibleMeshWideFOVBackgroundNode(&hybridReceiver.getVisibleMeshWideFOVBackground());
+    
+    // add background meshes to the scene
+    visibleMeshBackgroundNode.frustumCulled = false;
+    visibleMeshBackgroundNode.visible = false;
+    scene.addChildNode(&visibleMeshBackgroundNode);
+    
+    visibleMeshWideFOVBackgroundNode.frustumCulled = false;
+    visibleMeshWideFOVBackgroundNode.visible = false;
+    scene.addChildNode(&visibleMeshWideFOVBackgroundNode);
 
     wideFovNode.frustumCulled = false;
     scene.addChildNode(&wideFovNode);
@@ -183,7 +206,13 @@ int main(int argc, char** argv) {
         refNodes[i].addEntity(&hybridReceiver.getMesh(i));
         refNodes[i].frustumCulled = false;
         scene.addChildNode(&refNodes[i]);
+
+        refNodesBackground[i].addEntity(&hybridReceiver.getMeshBackground(i));
+        refNodesBackground[i].frustumCulled = false;
+        refNodesBackground[i].visible = false;
+        scene.addChildNode(&refNodesBackground[i]);
     }
+    
 
     // visibleNode.primitiveType = GL_TRIANGLES;
     visibleNode.frustumCulled = false;
@@ -196,8 +225,6 @@ int main(int argc, char** argv) {
     for (int i = 0; i < hiddenLayers; i++) {
         showLayers[i] = true;
     }
-
-    double elapsedTimeColor, elapsedTimeDepth;
     
     RenderStats renderStats;
     FrameRateWindow frameRateWindow;
@@ -405,23 +432,43 @@ int main(int argc, char** argv) {
         // Send pose to streamer
         pose_id_t poseID = poseStreamer.sendPose();
         double recvStartTime = timeutils::getTimeMicros();
-        hybridReceiver.recvData(poseStreamer, elapsedTimeColor, elapsedTimeDepth);
-        double recvTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - recvStartTime);
-        spdlog::info("Recv Time: {:.3f}ms", recvTimeMs);
-        poseStreamer.removePosesLessThan(std::min(hybridReceiver.poseIdColor, hybridReceiver.poseIdDepth));
-        spdlog::info("Pose ID {}: RGB ({}), D ({})", poseID, hybridReceiver.poseIdColor, hybridReceiver.poseIdDepth);
+        // hybridReceiver.recvData(poseStreamer, elapsedTimeColor, elapsedTimeDepth);
         
-        visibleNode.visible = showVisibleLayer;
-        wideFovNode.visible = showWideFovLayer;
-        for (int i = 0; i < hiddenLayers; i++) {
-            refNodes[i].visible = showLayers[i];
+        {
+            std::lock_guard<std::mutex> lock(hybridReceiver.useBackgroundProcessingMutex);
+            if (hybridReceiver.useBackgroundProcessing == false) {
+                // set background meshes to visible
+                visibleMeshBackgroundNode.visible = true;
+                visibleMeshWideFOVBackgroundNode.visible = true;
+                for (int i = 0; i < hiddenLayers; i++) {
+                    refNodesBackground[i].visible = true;
+                }
+            } else {
+                // set background meshes to invisible
+                visibleMeshBackgroundNode.visible = false;
+                visibleMeshWideFOVBackgroundNode.visible = false;
+                for (int i = 0; i < hiddenLayers; i++) {
+                    refNodesBackground[i].visible = false;
+                }
+            }
         }
+
+        double recvTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - recvStartTime);
+        // spdlog::info("Recv Time: {:.3f}ms", recvTimeMs);
+        poseStreamer.removePosesLessThan(std::min(hybridReceiver.poseIdColor, hybridReceiver.poseIdDepth));
+        // spdlog::info("Pose ID {}: RGB ({}), D ({})", poseID, hybridReceiver.poseIdColor, hybridReceiver.poseIdDepth);
+        
+        // visibleNode.visible = showVisibleLayer;
+        // wideFovNode.visible = showWideFovLayer;
+        // for (int i = 0; i < hiddenLayers; i++) {
+        //     refNodes[i].visible = showLayers[i];
+        // }
         
         renderStats = renderer.drawObjects(scene, camera);
         holeFiller.drawToScreen(renderer);
 
         double renderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - renderStartTime);
-        spdlog::info("Render Time: {:.3f}ms", renderTimeMs);
+        // spdlog::info("Render Time: {:.3f}ms", renderTimeMs);
     }); 
 
     app.run();
