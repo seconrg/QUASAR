@@ -370,6 +370,9 @@ int main(int argc, char** argv) {
                 // Restore camera position
                 remoteCamera.setPosition(remoteCamera.getPosition());
                 remoteCamera.updateViewMatrix();
+                
+                // Log out the current poseID
+                spdlog::info("Sending frame for poseID: {}", poseID);
 
                 hybridStreamer.sendFrame(poseInfo);
                 prevPoseID = poseID;

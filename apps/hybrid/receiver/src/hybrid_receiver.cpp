@@ -468,7 +468,7 @@ int main(int argc, char** argv) {
         holeFiller.drawToScreen(renderer);
 
         double renderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - renderStartTime);
-        // spdlog::info("Render Time: {:.3f}ms", renderTimeMs);
+        spdlog::info("Render Time: {:.3f}ms", renderTimeMs);
     }); 
 
     app.run();

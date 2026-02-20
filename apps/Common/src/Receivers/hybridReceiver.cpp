@@ -182,15 +182,17 @@ void HybridReceiver::updateMesh(bool isWideFOV, bool useBackgroundMesh) {
     // visibleTexture.writeToPNG("visibleTexture.png");
     if (isWideFOV) {
         visibleTextureWideFOV.bind();
-        poseIdColor = visibleTextureWideFOV.draw();
+        visibleTextureWideFOV.draw(poseIdColor);
+        
         depthTextureWideFOV.bind();
-        poseIdDepth = depthTextureWideFOV.draw();
+        depthTextureWideFOV.draw(poseIdDepth);
 
     } else {
         visibleTexture.bind();
-        poseIdColor = visibleTexture.draw();
+        visibleTexture.draw(poseIdColor);
+        
         depthTexture.bind();
-        poseIdDepth = depthTexture.draw();
+        depthTexture.draw(poseIdDepth);
     }
 
     meshFromBC4Shader.bind();
@@ -491,8 +493,8 @@ QuadFrame::FrameType HybridReceiver::loadFromMemory(const std::vector<char>& inp
     struct TimeStats timeStats;
 
     // Get poses for the frames
-    poseStreamer.getPose(poseIdColor, &colorFramePose, &elapsedTimeColor);
-    poseStreamer.getPose(poseIdDepth, &depthFramePose, &elapsedTimeDepth);
+    // poseStreamer.getPose(poseIdColor, &colorFramePose, &elapsedTimeColor);
+    // poseStreamer.getPose(poseIdDepth, &depthFramePose, &elapsedTimeDepth);
     
     if (visibleTexture.getLatestPoseID() == -1 || 
         visibleTextureWideFOV.getLatestPoseID() == -1 || 
@@ -504,6 +506,11 @@ QuadFrame::FrameType HybridReceiver::loadFromMemory(const std::vector<char>& inp
         spdlog::info("Latest poseID for visible texture: {}", visibleTexture.getLatestPoseID());
         spdlog::info("Latest poseID for visible texture wide FOV: {}", visibleTextureWideFOV.getLatestPoseID());
         spdlog::info("Latest poseID for video atlas texture: {}", videoAtlasTexture.getLatestPoseID());
+        
+        poseIdColor = std::min(visibleTexture.getLatestPoseID(), visibleTextureWideFOV.getLatestPoseID());
+        poseIdColor = std::min(poseIdColor, videoAtlasTexture.getLatestPoseID());
+
+        poseIdDepth = std::min(depthTexture.getLatestPoseID(), depthTextureWideFOV.getLatestPoseID());
     }
 
     startTime = timeutils::getTimeMicros();
@@ -538,7 +545,7 @@ QuadFrame::FrameType HybridReceiver::loadFromMemory(const std::vector<char>& inp
  
     // Update color texture
     videoAtlasTexture.bind();
-    videoAtlasTexture.draw(frame->poseID);
+    videoAtlasTexture.draw(poseIdColor);
 
     // Update alpha texture
     alphaAtlasTexture.bind();
