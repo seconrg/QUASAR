@@ -137,19 +137,10 @@ private:
     Mesh visibleMeshWideFOVBackground;
     std::vector<QuadMesh> meshesBackground;
     
-    // check which mesh to use for background processing
-    // the other mesh is used for rendering
-    
-    // Name the textrues
-    Texture visibleFrameTexture;
-    Texture visibleFrameTextureWideFOV;
-    BC4DepthVideoTexture depthFrameTexture;
-    BC4DepthVideoTexture depthFrameTextureWideFOV;
-    
     Texture visibleFrameTextureBackground;
     Texture visibleFrameTextureWideFOVBackground;
-    BC4DepthVideoTexture depthFrameTextureBackground;
-    BC4DepthVideoTexture depthFrameTextureWideFOVBackground;
+    BC4DepthVideoTexture depthTextureBackground;
+    BC4DepthVideoTexture depthTextureWideFOVBackground;
 
     UnlitMaterial visibleMeshMaterial;
     UnlitMaterial visibleMeshWideFOVMaterial;

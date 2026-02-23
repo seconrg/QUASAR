@@ -101,18 +101,14 @@ HybridReceiver::HybridReceiver(
             "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
         }
     })
-    , visibleFrameTexture(colorTextureCreateParams)
-    , depthFrameTexture(depthTextureCreateParams, "")
-    , visibleMeshMaterial({ .baseColorTexture = &visibleFrameTexture })
+    , visibleMeshMaterial({ .baseColorTexture = &visibleTexture })
     , visibleMesh({
         .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1),
         .maxIndices = (adjustedSize.x * adjustedSize.y + adjustedSize.x - 1) * 2 * 3,
         .material = &visibleMeshMaterial,
         .usage = GL_DYNAMIC_DRAW
     })
-    , visibleFrameTextureWideFOV(colorTextureCreateParams)
-    , depthFrameTextureWideFOV(depthTextureCreateParams, "")
-    , visibleMeshWideFOVMaterial({ .baseColorTexture = &visibleFrameTextureWideFOV})
+    , visibleMeshWideFOVMaterial({ .baseColorTexture = &visibleTextureWideFOV})
     , visibleMeshWideFOV({
         .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1),
         .maxIndices = (adjustedSize.x * adjustedSize.y + adjustedSize.x - 1) * 2 * 3,
@@ -120,7 +116,7 @@ HybridReceiver::HybridReceiver(
         .usage = GL_DYNAMIC_DRAW
     })
     , visibleFrameTextureBackground(colorTextureCreateParams)
-    , depthFrameTextureBackground(depthTextureCreateParams, "")
+    , depthTextureBackground(depthTextureCreateParams, "")
     , visibleMeshBackgroundMaterial({ .baseColorTexture = &visibleFrameTextureBackground })
     , visibleMeshBackground({
         .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1),
@@ -129,7 +125,7 @@ HybridReceiver::HybridReceiver(
         .usage = GL_DYNAMIC_DRAW
     })
     , visibleFrameTextureWideFOVBackground(colorTextureCreateParams)
-    , depthFrameTextureWideFOVBackground(depthTextureCreateParams, "")
+    , depthTextureWideFOVBackground(depthTextureCreateParams, "")
     , visibleMeshWideFOVBackgroundMaterial({ .baseColorTexture = &visibleFrameTextureWideFOVBackground })
     , visibleMeshWideFOVBackground({
         .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1),
@@ -208,30 +204,44 @@ void HybridReceiver::updateMesh(bool isWideFOV, bool isBackupMesh) {
                                                   visibleMeshBackground)
                                    : (isWideFOV ? visibleMeshWideFOV : 
                                                   visibleMesh);
-    Texture& frameTextureInUse = isBackupMesh ? (isWideFOV ? visibleFrameTextureWideFOVBackground : 
-                                                             visibleFrameTextureBackground)
-                                              : (isWideFOV ? visibleFrameTextureWideFOV : 
-                                                             visibleFrameTexture);
 
     BC4DepthVideoTexture& depthTextureInUse = \
-                           isBackupMesh ? (isWideFOV ? depthFrameTextureWideFOVBackground : 
-                                                       depthFrameTextureBackground)
-                                        : (isWideFOV ? depthFrameTextureWideFOV : 
-                                                       depthFrameTexture);
+                    isBackupMesh ? (isWideFOV ? depthTextureWideFOVBackground : 
+                                                depthTextureBackground)
+                                : (isWideFOV ?  depthTextureWideFOV : 
+                                                depthTexture);
 
-    if (isWideFOV) {
-        frameTextureInUse.bind();
-        visibleTextureWideFOV.drawToTexture(frameTextureInUse, poseIdColor);
-        
-        depthTextureInUse.bind();
-        depthTextureWideFOV.drawToTexture(depthTextureInUse, poseIdDepth);
+    if (isBackupMesh) {
+        if (isWideFOV) {
+            visibleFrameTextureWideFOVBackground.bind();
+            visibleTextureWideFOV.drawToTexture(visibleFrameTextureWideFOVBackground, poseIdColor);
+            
+            depthTextureWideFOVBackground.bind();
+            depthTextureWideFOV.drawToTexture(depthTextureWideFOVBackground, poseIdDepth);
 
-    } else {
-        frameTextureInUse.bind();
-        visibleTexture.drawToTexture(frameTextureInUse, poseIdColor);
-        
-        depthTextureInUse.bind();
-        depthTexture.drawToTexture(depthTextureInUse, poseIdDepth);
+        } else {
+            visibleFrameTextureBackground.bind();
+            visibleTexture.drawToTexture(visibleFrameTextureBackground, poseIdColor);
+            
+            depthTextureBackground.bind();
+            depthTexture.drawToTexture(depthTextureBackground, poseIdDepth);
+        }
+    }
+    else {
+        if (isWideFOV) {
+            visibleTextureWideFOV.bind();
+            visibleTextureWideFOV.draw(poseIdColor);
+            
+            depthTextureWideFOV.bind();
+            depthTextureWideFOV.draw(poseIdDepth);
+        }
+        else {
+            visibleTexture.bind();
+            visibleTexture.draw(poseIdColor);
+            
+            depthTexture.bind();
+            depthTexture.draw(poseIdDepth);
+        }
     }
 
     meshFromBC4Shader.bind();
