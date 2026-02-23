@@ -3,7 +3,11 @@
 
 #include <BS_thread_pool/BS_thread_pool.hpp>
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <Path.h>
+#include <thread>
 
 #include <CameraPose.h>
 #include <Materials/UnlitMaterial.h>
@@ -44,19 +48,26 @@ public:
 
     uint hiddenLayers;
 
-    std::mutex useBackgroundProcessingMutex;
-    bool useBackgroundProcessing = false;
+    std::mutex useBackupMeshMutex;
+    bool useBackupMesh = false;
 
     // CSV File for stats
     std::ofstream statsCSVFile;
     std::string statsCSVFileName;
     int frameID = 0;
 
+    // TextureMeshCreateParams for the textures
+    TextureDataCreateParams colorTextureCreateParams;
+    TextureDataCreateParams depthTextureCreateParams;
+
     // visible layer for meshwarp
     VideoTexture visibleTexture;
     VideoTexture visibleTextureWideFOV;
     BC4DepthVideoTexture depthTexture;
     BC4DepthVideoTexture depthTextureWideFOV;
+
+    Texture atlasTextureBackup;
+    Texture alphaAtlasTextureBackup;
 
     const PoseStreamer& poseStreamer;
     double& elapsedTimeColor;
@@ -82,7 +93,7 @@ public:
         const std::string& videoVisibleWideFovURL,
         const std::string& depthVisibleWideFovURL,
         GLFWwindow* window);
-    ~HybridReceiver() = default;
+    ~HybridReceiver();
 
     PerspectiveCamera& getRemoteCamera() { return remoteCamera; }
 
@@ -96,7 +107,7 @@ public:
                   double& elapsedTimeColor, 
                   double& elapsedTimeDepth);
 
-    void recvData();
+    void recvData(GLFWwindow* window);
 
     void updateMesh(bool isWideFOV, bool useBackgroundMesh);
 
@@ -105,6 +116,15 @@ public:
 
 
 private:
+    static constexpr size_t kMaxPendingFrames = 3;
+
+    std::thread worker;
+    std::condition_variable queueCv;
+    // if we find out that the video is behind, we cannot proceed with the frame, we simply return and check again later
+    // 
+    std::atomic<bool> stopWorker{false};
+    std::atomic<bool> workerRunning{false};
+
     uint depthFactor;
     uint vertexGroupSize;
     glm::uvec2 adjustedSize;
@@ -120,7 +140,16 @@ private:
     // check which mesh to use for background processing
     // the other mesh is used for rendering
     
-    // mutex for protecting the boolean
+    // Name the textrues
+    Texture visibleFrameTexture;
+    Texture visibleFrameTextureWideFOV;
+    BC4DepthVideoTexture depthFrameTexture;
+    BC4DepthVideoTexture depthFrameTextureWideFOV;
+    
+    Texture visibleFrameTextureBackground;
+    Texture visibleFrameTextureWideFOVBackground;
+    BC4DepthVideoTexture depthFrameTextureBackground;
+    BC4DepthVideoTexture depthFrameTextureWideFOVBackground;
 
     UnlitMaterial visibleMeshMaterial;
     UnlitMaterial visibleMeshWideFOVMaterial;

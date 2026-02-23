@@ -144,3 +144,50 @@ pose_id_t BC4DepthVideoTexture::draw(pose_id_t poseID) {
 
     return prevPoseID;
 }
+
+
+pose_id_t BC4DepthVideoTexture::drawToTexture(BC4DepthVideoTexture& texture, pose_id_t poseID) {
+    std::lock_guard<std::mutex> lock(m);
+    if (frames.empty()) {
+        return -1;
+    }
+
+    if (poseID != -1 && poseID == prevPoseID) {
+        return prevPoseID;
+    }
+
+    FrameData* frameData = nullptr;
+    if (poseID != -1) {
+        for (auto& f : frames) {
+            if (f.poseID == poseID) {
+                frameData = &f;
+                break;
+            }
+        }
+    }
+    else {
+        frameData = &frames.back();
+    }
+
+    if (frameData == nullptr) {
+        return -1;
+    }
+
+    // Update the BC4 compressed buffer
+    Buffer& bc4CompressedBuffer = texture.bc4CompressedBuffer;
+    bc4CompressedBuffer.bind();
+    void* ptr = bc4CompressedBuffer.mapToCPU(GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+    if (ptr) {
+        std::memcpy(ptr, frameData->buffer.data(), frameData->buffer.size());
+        bc4CompressedBuffer.unmapFromCPU();
+    }
+    else {
+        spdlog::warn("Failed to map BC4 compressed buffer. Copying using setData");
+        bc4CompressedBuffer.setData(frameData->buffer.size(), frameData->buffer.data());
+    }
+    bc4CompressedBuffer.unbind();
+
+    prevPoseID = frameData->poseID;
+
+    return prevPoseID;
+}

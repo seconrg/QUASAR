@@ -245,10 +245,7 @@ void VideoTexture::receiveFrame() {
                 frame.buffer.resize(map.size);
                 std::memcpy(frame.buffer.data(), map.data, map.size);
                 frames.push_back(std::move(frame));
-
             }
-
-            
         }
 
         gst_buffer_unmap(buffer, &map);
@@ -344,6 +341,41 @@ pose_id_t VideoTexture::draw(pose_id_t poseID) {
 
     glPixelStorei(GL_UNPACK_ROW_LENGTH, videoWidth);
     loadFromData(frameData->buffer.data(), false);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+
+    prevPoseID = frameData->poseID;
+    return frameData->poseID;
+}
+
+pose_id_t VideoTexture::drawToTexture(Texture& texture, pose_id_t poseID) {
+    std::lock_guard<std::mutex> lock(m);
+    if (frames.empty()) {
+        return -1;
+    }
+
+    if (poseID != -1 && poseID == prevPoseID) {
+        return prevPoseID;
+    }
+
+    FrameData* frameData = nullptr;
+    if (poseID != -1) {
+        for (auto& f : frames) {
+            if (f.poseID == poseID) {
+                frameData = &f;
+                break;
+            }
+        }
+    }
+    else {
+        frameData = &frames.back();
+    }
+
+    if (frameData == nullptr) {
+        return prevPoseID;
+    }
+
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, videoWidth);
+    loadFromDataToTexture(frameData->buffer.data(), texture, false);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 
     prevPoseID = frameData->poseID;

@@ -434,21 +434,30 @@ int main(int argc, char** argv) {
         double recvStartTime = timeutils::getTimeMicros();
         // hybridReceiver.recvData(poseStreamer, elapsedTimeColor, elapsedTimeDepth);
         
+        bool isBackupMesh = false; 
         {
-            std::lock_guard<std::mutex> lock(hybridReceiver.useBackgroundProcessingMutex);
-            if (hybridReceiver.useBackgroundProcessing == false) {
+            std::lock_guard<std::mutex> lock(hybridReceiver.useBackupMeshMutex);
+            isBackupMesh = hybridReceiver.useBackupMesh;
+            if (hybridReceiver.useBackupMesh) {
                 // set background meshes to visible
                 visibleMeshBackgroundNode.visible = true;
                 visibleMeshWideFOVBackgroundNode.visible = true;
+
+                visibleNode.visible = false;
+                wideFovNode.visible = false;
                 for (int i = 0; i < hiddenLayers; i++) {
                     refNodesBackground[i].visible = true;
+                    refNodes[i].visible = false;
                 }
             } else {
                 // set background meshes to invisible
                 visibleMeshBackgroundNode.visible = false;
                 visibleMeshWideFOVBackgroundNode.visible = false;
+                visibleNode.visible = true;
+                wideFovNode.visible = true;
                 for (int i = 0; i < hiddenLayers; i++) {
                     refNodesBackground[i].visible = false;
+                    refNodes[i].visible = true;
                 }
             }
         }
@@ -468,7 +477,16 @@ int main(int argc, char** argv) {
         holeFiller.drawToScreen(renderer);
 
         double renderTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - renderStartTime);
-        spdlog::info("Render Time: {:.3f}ms", renderTimeMs);
+        // spdlog::info("Render Time: {:.3f}ms", renderTimeMs);
+        // log render time to file
+        std::ofstream logFile("render_time.txt", std::ios::app);
+        logFile << renderTimeMs << std::endl;
+        logFile.close();
+
+        // if saveImage is true, save the image to disk
+        if (saveImages) {
+            recorder.captureFrame(camera);
+        }
     }); 
 
     app.run();

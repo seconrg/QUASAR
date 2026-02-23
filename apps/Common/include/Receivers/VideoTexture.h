@@ -45,6 +45,7 @@ public:
     bool containsFrames();
     bool containsFrameWithPoseID(pose_id_t poseID);
     pose_id_t draw(pose_id_t poseID = -1);
+    pose_id_t drawToTexture(Texture& texture, pose_id_t poseID=-1);
 
     void resize(uint width, uint height);
 

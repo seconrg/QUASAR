@@ -47,6 +47,8 @@ public:
     void setMaxQueueSize(size_t maxQueueSize) { this->maxQueueSize = maxQueueSize; }
 
     pose_id_t draw(pose_id_t poseID = -1);
+    pose_id_t drawToTexture(BC4DepthVideoTexture& texture, pose_id_t poseID);
+ 
 
     void loadFromFile(const Path& dataPath);
 

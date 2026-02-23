@@ -125,6 +125,48 @@ void Texture::loadFromData(const void* data, bool resize) {
     glBindTexture(target, 0);
 }
 
+
+void Texture::loadFromDataToTexture(const void* data, Texture& texture, bool resize) {
+    glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+    // glBindTexture(target, ID);
+    texture.bind();
+
+    if (!multiSampled) {
+        glTexParameteri(target, GL_TEXTURE_WRAP_S, wrapS);
+        glTexParameteri(target, GL_TEXTURE_WRAP_T, wrapT);
+        glTexParameteri(target, GL_TEXTURE_MIN_FILTER, minFilter);
+        glTexParameteri(target, GL_TEXTURE_MAG_FILTER, magFilter);
+
+        if (!array) {
+            if (resize || data == nullptr) {
+                glTexImage2D(target, 0, internalFormat, width, height, 0, format, type, data);
+            }
+            else {
+                glTexSubImage2D(target, 0, 0, 0, width, height, format, type, data);
+            }
+        }
+        else {
+            if (resize || data == nullptr) {
+                glTexImage3D(target, 0, internalFormat, width, height, arrayLayers, 0, format, type, data);
+            }
+            else {
+                glTexSubImage3D(target, 0, 0, 0, 0, width, height, arrayLayers, format, type, data);
+            }
+        }
+
+        if (minFilter == GL_LINEAR_MIPMAP_LINEAR || minFilter == GL_LINEAR_MIPMAP_NEAREST) {
+            glGenerateMipmap(target);
+        }
+    }
+#ifdef GL_CORE
+    else {
+        glTexImage2DMultisample(target, numSamples, internalFormat, width, height, GL_TRUE);
+    }
+#endif
+    // glBindTexture(target, 0);
+    texture.unbind();
+}
+
 void Texture::loadFromFile(const std::string& path, bool flipTextureY, bool gammaCorrected) {
     std::string resolvedPath = path;
 
