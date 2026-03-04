@@ -78,6 +78,9 @@ public:
         QuadSet::Sizes proxySizes;
     };
 
+    std::ofstream blackComputedCSVFile;
+    std::string blackComputedCSVFileName;
+
     // log out stats to CSV file
     std::ofstream statsCSVFile;
     std::string statsCSVFileName;
