@@ -261,11 +261,11 @@ bool PoseSendRecvSimulator::getPosePredicted(
     predictedPose.setViewMatrix(predictedView);
     predictedPose.setProjectionMatrix(latest.mono.proj);
 
-    spdlog::info("  Latest Position:   ({:.3f}, {:.3f}, {:.3f})", p0.x, p0.y, p0.z);
-    spdlog::info("  Previous Position: ({:.3f}, {:.3f}, {:.3f})", p1.x, p1.y, p1.z);
-    spdlog::info("  Latest but two position: ({:.3f}, {:.3f}, {:.3f})", p2.x, p2.y, p2.z);
+    // spdlog::info("  Latest Position:   ({:.3f}, {:.3f}, {:.3f})", p0.x, p0.y, p0.z);
+    // spdlog::info("  Previous Position: ({:.3f}, {:.3f}, {:.3f})", p1.x, p1.y, p1.z);
+    // spdlog::info("  Latest but two position: ({:.3f}, {:.3f}, {:.3f})", p2.x, p2.y, p2.z);
 
-    spdlog::info("  Predicted Position: ({:.3f}, {:.3f}, {:.3f})", finalPrediction.x, finalPrediction.y, finalPrediction.z);
+    // spdlog::info("  Predicted Position: ({:.3f}, {:.3f}, {:.3f})", finalPrediction.x, finalPrediction.y, finalPrediction.z);
 
     return true;
 }

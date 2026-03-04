@@ -186,6 +186,7 @@ private:
     Scene& remoteScene;
     
     PerspectiveCamera& remoteCamera;
+    PerspectiveCamera remoteCameraPrev;
     PerspectiveCamera remoteCameraWideFOV;
 
     // Wide fov

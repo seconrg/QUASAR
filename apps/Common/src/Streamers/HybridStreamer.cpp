@@ -216,6 +216,13 @@ HybridStreamer::HybridStreamer(
     meshWarpReconstructShader.setVec2("depthMapSize", depthMapSize);
     meshWarpReconstructShader.setUint("vertexGroupSize", params.vertexGroupSize);
 
+    // setup prev camera
+    remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
+    remoteCameraPrev.setViewMatrix(remoteCamera.getViewMatrix());
+    remoteCameraPrev.setFovyDegrees(remoteCamera.getFovyDegrees());
+    remoteCameraPrev.setNear(remoteCamera.getNear());
+    remoteCameraPrev.setFar(remoteCamera.getFar());
+
     // setup wide fov camera
     remoteCameraWideFOV.setProjectionMatrix(remoteCamera.getProjectionMatrix());
     remoteCameraWideFOV.setFovyDegrees(params.wideFOV);
@@ -246,7 +253,7 @@ HybridStreamer::HybridStreamer(
     spdlog::info("HybridStreamer initialized");
 
     // open the stats CSV file
-    statsCSVFileName = "hybrid_streamer_stats.csv";
+    statsCSVFileName = "hybrid_streamer_time.csv";
     statsCSVFile.open(statsCSVFileName);
 
     // write the header to the CSV file 
@@ -483,6 +490,126 @@ RenderStats HybridStreamer::generateFrame() {
     Wide FOV visible layer rendering
     ============================
     */
+
+    // use prevRenderPose and currentRenderPose to generate an estimation of the wide fov camera pose
+
+    glm::mat4 prevProjectionMatrix = remoteCameraPrev.getProjectionMatrix();
+    glm::mat4 prevViewMatrix = remoteCameraPrev.getViewMatrix();
+
+    glm::mat4 currentProjectionMatrix = remoteCamera.getProjectionMatrix();
+    glm::mat4 currentViewMatrix = remoteCamera.getViewMatrix();
+    // assume we have 4 corners of the previous frame (-1,1), (-1,1), (1,-1), (1,1)
+    // we can use perspective projection to project these 4 corners to the current frame
+    // based on the projected corners, we can estimate the uncovered area of the wide fov camera
+    // we can the use this to do 1) Decide whether to draw the wide fov layer or not
+    // 2) Decide the region where the wide fov layer should be drawn
+    // Print out the previous and current camera poses
+
+    spdlog::info("Current viewport size: ({}, {})", quadSet.getSize().x, quadSet.getSize().y);
+
+    spdlog::info("  Previous Position: ({:.3f}, {:.3f}, {:.3f})", prevViewMatrix[3][0], prevViewMatrix[3][1], prevViewMatrix[3][2]);
+    spdlog::info("  Current Position: ({:.3f}, {:.3f}, {:.3f})", currentViewMatrix[3][0], currentViewMatrix[3][1], currentViewMatrix[3][2]);
+    
+    // reproject the 4 corners to the world space
+    // glm::vec3 corners[4] = {
+    //     glm::vec3(-1.0, -1.0, 0),
+    //     glm::vec3(-1.0, 1.0, 0),
+    //     glm::vec3(1.0, -1.0, 0),
+    //     glm::vec3(1.0, 1.0, 0),
+    // };
+    glm::vec3 corners[4] = {
+        glm::vec3(0, 0, 1.0),
+        glm::vec3(quadSet.getSize().x, 0, 1.0),
+        glm::vec3(0, quadSet.getSize().y, 1.0),
+        glm::vec3(quadSet.getSize().x, quadSet.getSize().y, 1.0),
+    };
+    glm::vec3 newCorners[4];
+    for (int i = 0; i < 4; i++) {
+        glm::vec3 worldCorner = glm::unProject(
+            corners[i], 
+            prevViewMatrix, 
+            prevProjectionMatrix, 
+            glm::vec4(0, 0, quadSet.getSize().x, quadSet.getSize().y));
+        newCorners[i] = glm::project(
+            worldCorner, 
+            currentViewMatrix, 
+            currentProjectionMatrix, 
+            glm::vec4(0, 0, quadSet.getSize().x, quadSet.getSize().y));
+
+
+        spdlog::info("  New corner {}: ({:.3f}, {:.3f}, {:.3f})", i, newCorners[i].x, newCorners[i].y, newCorners[i].z);
+        newCorners[i].x = std::max(newCorners[i].x, 0.0f);
+        newCorners[i].x = std::min(newCorners[i].x, float(quadSet.getSize().x));
+
+        newCorners[i].y = std::max(newCorners[i].y, 0.0f);
+        newCorners[i].y = std::min(newCorners[i].y, float(quadSet.getSize().y));
+    }
+
+    // check the total black areas by the new corners
+    float totalBlackArea = 0.0f;
+    // 
+    // check the frameID
+    for (int i = 0; i < 4; i++) {
+        spdlog::info("     New corner {}: ({}, {})", i, newCorners[i].x, newCorners[i].y);
+    }
+
+    newCorners[1].x = (quadSet.getSize().x - newCorners[1].x);
+    newCorners[2].y = (quadSet.getSize().y - newCorners[2].y);
+    newCorners[3].x = (quadSet.getSize().x - newCorners[3].x);
+    newCorners[3].y = (quadSet.getSize().y - newCorners[3].y);
+
+    for (int i = 0; i < 4; i++) {
+        totalBlackArea += newCorners[i].x * newCorners[i].y;
+    }
+
+    totalBlackArea += (newCorners[0].y + newCorners[1].y) * (quadSet.getSize().x - newCorners[0].x - newCorners[1].x) / 2;
+    totalBlackArea += (newCorners[0].x + newCorners[2].x) * (quadSet.getSize().y - newCorners[0].y - newCorners[2].y) / 2;
+    totalBlackArea += (newCorners[2].y + newCorners[3].y) * (quadSet.getSize().x - newCorners[2].x - newCorners[3].x) / 2;
+    totalBlackArea += (newCorners[1].x + newCorners[3].x) * (quadSet.getSize().y - newCorners[1].y - newCorners[3].y) / 2;
+
+    spdlog::info("Frame ID: {}", frameID);
+    spdlog::info("Total black area: {}", totalBlackArea);
+    blackComputedCSVFile.open(blackComputedCSVFileName, std::ios::app);
+    blackComputedCSVFile << frameID << "," << totalBlackArea << std::endl;
+    blackComputedCSVFile.close();
+
+
+    // work reversely reproject the new pose into the old pose's wide fov space
+    glm::mat4 projectionMatrixWideFOV = remoteCameraWideFOV.getProjectionMatrix();
+
+    spdlog::info(" prevProjectionMatrix: ");
+    for (int i = 0; i < 4; i++) {
+        spdlog::info("({}, {}, {}, {})", prevProjectionMatrix[i][0], prevProjectionMatrix[i][1], prevProjectionMatrix[i][2], prevProjectionMatrix[i][3]);
+        
+    }
+
+    for (int i = 0; i < 4; i++) {
+        glm::vec3 worldCorner = glm::unProject(
+            corners[i], 
+            currentViewMatrix, 
+            currentProjectionMatrix, 
+            glm::vec4(0, 0, quadSet.getSize().x, quadSet.getSize().y));
+
+        glm::vec3 cornerInSourceWideFoVImage = glm::project(
+            worldCorner, 
+            prevViewMatrix, 
+            projectionMatrixWideFOV, 
+            glm::vec4(0, 0, quadSet.getSize().x, quadSet.getSize().y));
+
+        // we compute the area of the corner in the wide fov image
+        spdlog::info("  Corner in source wide fov image: ({}, {}, {})", cornerInSourceWideFoVImage.x, cornerInSourceWideFoVImage.y, cornerInSourceWideFoVImage.z);
+    }
+
+    // we get the new corners in the wide fov space
+    
+
+
+
+    // if (totalBlackArea > 10000.0f) {
+    if (true) {
+        // We can skip the wide fov layer rendering and reconstruction
+        // 
+
     startTime = timeutils::getTimeMicros();
 
     remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
@@ -530,6 +657,17 @@ RenderStats HybridStreamer::generateFrame() {
     timeStats.wideFovMeshGenFrameStats.createTimeMs = wideFovMeshReconstructTimeMs;
 
     // depthStreamerWideFOV.writeColorAsPNG("debug_depth_widefov.png");
+    }
+
+    // Update the previous camera pose
+    remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
+    remoteCameraPrev.setViewMatrix(remoteCamera.getViewMatrix());
+
+    /*
+    ============================
+    Generate atlas frames
+    ============================
+    */
 
     subFrameIndex atlasIndex = {0, 0};
     uint subFrameWidth = depthStreamerRT.width;

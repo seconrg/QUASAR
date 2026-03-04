@@ -202,7 +202,7 @@ int main(int argc, char** argv) {
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_LINEAR,
         .magFilter = GL_LINEAR,
-    }, renderer, tonemapper, outputPath, config.targetFramerate);
+    }, renderer, holeFiller, outputPath, config.targetFramerate);
     CameraAnimator cameraAnimator(cameraPathFile, numPoses);
 
     if (saveImages) {
