@@ -16,6 +16,8 @@
 #include <PostProcessing/Tonemapper.h>
 #include <PostProcessing/ShowDepthEffect.h>
 #include <PostProcessing/ShowNormalsEffect.h>
+#include <Primitives/FullScreenQuad.h>
+#include <Shaders/Shader.h>
 
 #include <Codecs/AlphaCodec.h>
 
@@ -84,6 +86,10 @@ public:
     // log out stats to CSV file
     std::ofstream statsCSVFile;
     std::string statsCSVFileName;
+
+    // log out bitrate stats to CSV file
+    std::ofstream bitrateStatsCSVFile;
+    std::string bitrateStatsCSVFileName;
 
     // Hidden Layers
     std::vector<FrameRenderTarget> frameRTsHidLayer;
@@ -227,6 +233,12 @@ private:
     Node visibleMeshWideFOVNode;
 
     void reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, BC4DepthStreamer &depthStreamer);
+
+    Shader quadMaskShader;
+    FullScreenQuad quadMaskQuad;
+    FrameRenderTarget debugMaskRT;
+
+    glm::vec3 normalViewCornersInWideFoVImage[4];
 
 };
 

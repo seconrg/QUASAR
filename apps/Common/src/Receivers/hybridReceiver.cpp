@@ -168,7 +168,7 @@ HybridReceiver::HybridReceiver(
     queueCv.notify_one();
 
     // Initialize CSV file for stats
-    statsCSVFileName = "hybrid_receiver_stats.csv";
+    statsCSVFileName = "hybrid_receiver_stats_widefov.csv";
     statsCSVFile.open(statsCSVFileName);
     statsCSVFile << "frame_id,memory_transfer_time_ms,visible,wide_fov";
     for (int layer = 0; layer < hiddenLayers; layer++) {

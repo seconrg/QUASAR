@@ -1,5 +1,6 @@
+#include "Utils/Platform.h"
 #include <Streamers/HybridStreamer.h>
-// #include <shaders_common.h>
+#include <algorithm>
 #include <nvtx3/nvToolsExt.h>
 #include <Utils/FileIO.h>
 
@@ -136,6 +137,23 @@ HybridStreamer::HybridStreamer(
             "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
         }
     })
+    , quadMaskShader({
+        .vertexCodeData = SHADER_COMMON_QUAD_MASK_VERT,
+        .vertexCodeSize = SHADER_COMMON_QUAD_MASK_VERT_len,
+        .fragmentCodeData = SHADER_COMMON_QUAD_MASK_FRAG,
+        .fragmentCodeSize = SHADER_COMMON_QUAD_MASK_FRAG_len,
+    })
+    , debugMaskRT({
+        .width = remoteRenderer.width,
+        .height = remoteRenderer.height,
+        .internalFormat = GL_RGBA16F,
+        .format = GL_RGBA,
+        .type = GL_HALF_FLOAT,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+        .minFilter = GL_LINEAR,
+        .magFilter = GL_LINEAR,
+    })
     , visibleMeshMaterial({ .baseColorTexture = &frameRTVisible.colorTexture })
     , visibleMeshWideFOVMaterial({ .baseColorTexture = &frameRTVisibleWideFov.colorTexture })
     , visibleMesh({
@@ -253,7 +271,7 @@ HybridStreamer::HybridStreamer(
     spdlog::info("HybridStreamer initialized");
 
     // open the stats CSV file
-    statsCSVFileName = "hybrid_streamer_time.csv";
+    statsCSVFileName = "hybrid_streamer_time_widefov.csv";
     statsCSVFile.open(statsCSVFileName);
 
     // write the header to the CSV file 
@@ -278,6 +296,47 @@ HybridStreamer::HybridStreamer(
     statsCSVFile << std::endl;
     statsCSVFile.close();
 
+    // open the bitrate stats CSV file
+    bitrateStatsCSVFileName = "hybrid_streamer_bitrate_widefov.csv";
+    bitrateStatsCSVFile.open(bitrateStatsCSVFileName);
+    // write the header to the CSV file 
+    bitrateStatsCSVFile << "frameID";
+    bitrateStatsCSVFile << ",video_atlas_bitrate";
+    bitrateStatsCSVFile << ",visible_bitrate";
+    bitrateStatsCSVFile << ",visible_wide_fov_bitrate";
+    bitrateStatsCSVFile << ",depth_bitrate";
+    bitrateStatsCSVFile << ",depth_wide_fov_bitrate";
+    bitrateStatsCSVFile << ",proxy_bitrate";
+    bitrateStatsCSVFile << std::endl;
+    bitrateStatsCSVFile.close();
+
+    // Given the projection matrix of wideFov and the normal projection matrix, 
+    // we can pre-compute the corners of the normal view space in the wide fov space
+    glm::mat4 wideFovProjectionMatrix = remoteCameraWideFOV.getProjectionMatrix();
+    glm::mat4 normalProjectionMatrix = remoteCamera.getProjectionMatrix();
+    glm::vec3 corners[4] = {
+        glm::vec3(0, 0, 1.0),
+        glm::vec3(quadSet.getSize().x, 0, 1.0),
+        glm::vec3(0, quadSet.getSize().y, 1.0),
+        glm::vec3(quadSet.getSize().x, quadSet.getSize().y, 1.0),
+    };
+    for (int i = 0; i < 4; i++) {
+        corners[i] = glm::vec3(corners[i].x, corners[i].y, corners[i].z);
+        corners[i] = glm::unProject(
+            corners[i], 
+            normalProjectionMatrix, 
+            glm::mat4(1.0f), 
+            glm::vec4(0.0f, 0.0f, remoteRenderer.width, remoteRenderer.height));
+        normalViewCornersInWideFoVImage[i] = glm::project(            corners[i],
+            wideFovProjectionMatrix, 
+            glm::mat4(1.0f), 
+            glm::vec4(0.0f, 0.0f, remoteRenderer.width, remoteRenderer.height));
+        
+        // spdlog::info("Corner in wide fov space: ({}, {}, {})", 
+        //     normalViewCornersInWideFoVImage[i].x, 
+        //     normalViewCornersInWideFoVImage[i].y, 
+        //     normalViewCornersInWideFoVImage[i].z);
+    }
 }
 
 void HybridStreamer::addMeshesToScene(Scene& localScene) {
@@ -579,10 +638,15 @@ RenderStats HybridStreamer::generateFrame() {
 
     spdlog::info(" prevProjectionMatrix: ");
     for (int i = 0; i < 4; i++) {
-        spdlog::info("({}, {}, {}, {})", prevProjectionMatrix[i][0], prevProjectionMatrix[i][1], prevProjectionMatrix[i][2], prevProjectionMatrix[i][3]);
+        spdlog::info("({}, {}, {}, {})", 
+            prevProjectionMatrix[i][0], 
+            prevProjectionMatrix[i][1], 
+            prevProjectionMatrix[i][2], 
+            prevProjectionMatrix[i][3]);
         
     }
-
+    
+    glm::vec3 reprojectedCornersInWideFoVImage[4];
     for (int i = 0; i < 4; i++) {
         glm::vec3 worldCorner = glm::unProject(
             corners[i], 
@@ -597,25 +661,104 @@ RenderStats HybridStreamer::generateFrame() {
             glm::vec4(0, 0, quadSet.getSize().x, quadSet.getSize().y));
 
         // we compute the area of the corner in the wide fov image
-        spdlog::info("  Corner in source wide fov image: ({}, {}, {})", cornerInSourceWideFoVImage.x, cornerInSourceWideFoVImage.y, cornerInSourceWideFoVImage.z);
+        reprojectedCornersInWideFoVImage[i] = cornerInSourceWideFoVImage;
+
     }
-
-    // we get the new corners in the wide fov space
-    
-
-
-
-    // if (totalBlackArea > 10000.0f) {
-    if (true) {
-        // We can skip the wide fov layer rendering and reconstruction
-        // 
 
     startTime = timeutils::getTimeMicros();
 
     remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
 
-    remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
+    bool trimWideFov = false;
 
+    // if (totalBlackArea > 10000.0f) {
+    if (trimWideFov) {
+
+    
+    const glm::vec2 viewportSize(remoteRenderer.width, remoteRenderer.height);
+
+
+    // remoteRenderer.gBuffer.unbind();
+
+    // Pass 2: Render the uncovered area in the wideFov Image
+    // By doing the reprojection from the normal view to the wide fov image using projection matrix
+    // The rectangular area is distorted, some pixels are overflowed into wide fov region, 
+    // resulting in "uncovered" areas in the normal view
+    
+    // get the region of the union of reprojected corners and normal view corners
+    glm::vec3 maskCorners[4];
+    maskCorners[0] = glm::vec3(std::min(normalViewCornersInWideFoVImage[0].x, reprojectedCornersInWideFoVImage[0].x),
+                               std::min(normalViewCornersInWideFoVImage[0].y, reprojectedCornersInWideFoVImage[0].y), 1.0f);
+    maskCorners[1] = glm::vec3(std::max(normalViewCornersInWideFoVImage[1].x, reprojectedCornersInWideFoVImage[1].x),
+                               std::min(normalViewCornersInWideFoVImage[1].y, reprojectedCornersInWideFoVImage[1].y), 1.0f);
+    maskCorners[2] = glm::vec3(std::min(normalViewCornersInWideFoVImage[2].x, reprojectedCornersInWideFoVImage[2].x),
+                               std::max(normalViewCornersInWideFoVImage[2].y, reprojectedCornersInWideFoVImage[2].y), 1.0f);
+    maskCorners[3] = glm::vec3(std::max(normalViewCornersInWideFoVImage[3].x, reprojectedCornersInWideFoVImage[3].x),
+                               std::max(normalViewCornersInWideFoVImage[3].y, reprojectedCornersInWideFoVImage[3].y), 1.0f);
+
+    // TODO: Check whether we need any heuristic way to expand the mask region
+    // double the distance of the mask corners
+    // compute the vector from the mask corners to the normal view corners
+    // we compute from mask corner to the normal view corner, and then double the distance
+    glm::vec3 maskCornersExpanded[4];
+    for (int i = 0; i < 4; i++) {
+        glm::vec3 vector = maskCorners[i] - normalViewCornersInWideFoVImage[i];
+        maskCornersExpanded[i] = maskCorners[i] + 5.0f * vector;
+    }
+
+    remoteRenderer.gBuffer.bind();
+    // remoteRenderer.outputRT.bind();
+    remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
+    remoteRenderer.pipeline.writeMaskState.disableColorWrites();
+    // remoteRenderer.pipeline.writeMaskState.enableColorWrites();
+    // We use the existing rect region as the mask: Those are covered, no need to draw
+    // remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
+    remoteRenderer.pipeline.apply();
+    glClearStencil(0);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    quadMaskShader.bind();
+    quadMaskShader.setVec4("uDebugColor", glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
+    quadMaskShader.setVec2("uViewport", viewportSize);
+    quadMaskShader.setVec2("uCorners[0]", maskCornersExpanded[0]);
+    quadMaskShader.setVec2("uCorners[1]", maskCornersExpanded[1]);
+    quadMaskShader.setVec2("uCorners[2]", maskCornersExpanded[2]);
+    quadMaskShader.setVec2("uCorners[3]", maskCornersExpanded[3]);
+    quadMaskQuad.draw();
+    // remoteRenderer.outputRT.unbind();
+    remoteRenderer.gBuffer.unbind();
+
+
+    // Pass 1: render the normal view scene range into the gbuffer
+    // those are the parts that are visible in the normal view, so no need to draw them in the wideFov
+    // use it as a stencil mask to avoid drawing them again
+
+    remoteRenderer.gBuffer.bind();
+    // remoteRenderer.outputRT.bind();
+    remoteRenderer.pipeline.stencilState.stencilRef = 0;
+    remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_ZERO, GL_KEEP, GL_REPLACE);
+    remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 0);
+    remoteRenderer.pipeline.stencilState.writeStencilMask = 0xFF;
+    remoteRenderer.pipeline.writeMaskState.disableColorWrites();
+    remoteRenderer.pipeline.apply();
+    
+    quadMaskShader.bind();
+    quadMaskShader.setVec4("uDebugColor", glm::vec4(0.0f, 1.0f, 0.0f, 1.0f));
+    quadMaskShader.setVec2("uViewport", viewportSize);
+    quadMaskShader.setVec2("uCorners[0]", normalViewCornersInWideFoVImage[0]);
+    quadMaskShader.setVec2("uCorners[1]", normalViewCornersInWideFoVImage[1]);
+    quadMaskShader.setVec2("uCorners[2]", normalViewCornersInWideFoVImage[2]);
+    quadMaskShader.setVec2("uCorners[3]", normalViewCornersInWideFoVImage[3]);
+    quadMaskQuad.draw();
+    // remoteRenderer.outputRT.unbind();
+    // log out the mask image
+    // remoteRenderer.outputRT.writeColorAsPNG("debug_mask_" + std::to_string(frameID) + ".png");
+    remoteRenderer.gBuffer.unbind();
+
+    // use the previous generated stencil buffer to draw only the uncovered area
+    remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_EQUAL, 1);
+    } else {
+    
+    remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
     remoteRenderer.pipeline.writeMaskState.disableColorWrites();
     // From the previous mesh, see what parts are visible in wide fov
     renderStats += remoteRenderer.drawObjectsNoLighting(wideFovScene, remoteCameraWideFOV);
@@ -625,18 +768,22 @@ RenderStats HybridStreamer::generateFrame() {
     
     // use the previous generated stencil buffer to avoid drawing where wide fov has drawn
     remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
+    }
     remoteRenderer.pipeline.writeMaskState.enableColorWrites();
     
     // Draw the whole scene and composite with wide fov
     renderStats += remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCameraWideFOV, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     remoteRenderer.pipeline.stencilState.restoreStencilState();
     // render with tonemapper for video streaming
+    // log out the wide fov image
+    // remoteRenderer.outputRT.writeColorAsPNG("debug_widefov_image" + std::to_string(frameID) + ".png");
     tonemapper.enableTonemapping(false);
     tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisibleWideFov);
     tonemapper.enableTonemapping(true);
 
     // render into depthStreamerWideFOV
     tonemapper.drawToRenderTarget(remoteRenderer, visibleVideoStreamerWideFOV);
+
     depthEffect.drawToRenderTarget(remoteRenderer, depthStreamerWideFOV);
     
     // Render finished, log the time
@@ -657,7 +804,6 @@ RenderStats HybridStreamer::generateFrame() {
     timeStats.wideFovMeshGenFrameStats.createTimeMs = wideFovMeshReconstructTimeMs;
 
     // depthStreamerWideFOV.writeColorAsPNG("debug_depth_widefov.png");
-    }
 
     // Update the previous camera pose
     remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
@@ -754,6 +900,25 @@ void HybridStreamer::sendFrame(PoseReceiver::PoseInfo poseInfo) {
         videoAtlasStreamerRT.sendFrame(poseID);
         send(compressedData);
     }
+
+    // get the bitrate status of all streamers
+    double visibleBitRate = visibleVideoStreamerRT.stats.bitrateMbps;
+    double visibleWideFovBitRate = visibleVideoStreamerWideFOV.stats.bitrateMbps;
+    double videoAtlasBitRate = videoAtlasStreamerRT.stats.bitrateMbps;
+    double depthBitRate = depthStreamerRT.stats.bitrateMbps;
+    double depthWideFovBitRate = depthStreamerWideFOV.stats.bitrateMbps;
+    double proxyBitRate = this->DataStreamerTCP::stats.bitrateMbps;
+
+    // write the bitrate stats to the CSV file
+    bitrateStatsCSVFile.open(bitrateStatsCSVFileName, std::ios::app);
+    bitrateStatsCSVFile << frameID << ",";
+    bitrateStatsCSVFile << videoAtlasBitRate << ",";
+    bitrateStatsCSVFile << visibleBitRate << ",";
+    bitrateStatsCSVFile << visibleWideFovBitRate << ",";
+    bitrateStatsCSVFile << depthBitRate << ",";
+    bitrateStatsCSVFile << depthWideFovBitRate << ",";
+    bitrateStatsCSVFile << proxyBitRate << std::endl;
+    bitrateStatsCSVFile.close();
 }
 
 size_t HybridStreamer::writeToMemory(PoseReceiver::PoseInfo poseInfo, std::vector<char>& outputData) {
@@ -830,6 +995,9 @@ size_t HybridStreamer::writeToMemory(PoseReceiver::PoseInfo poseInfo, std::vecto
     }
 
     spdlog::info("Total data size: {}", outputData.size());
+
+
+
 
     return outputData.size();
 }
