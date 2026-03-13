@@ -195,12 +195,12 @@ int main(int argc, char** argv) {
     visibleMeshBackgroundNode.visible = false;
     scene.addChildNode(&visibleMeshBackgroundNode);
     
-    visibleMeshWideFOVBackgroundNode.frustumCulled = false;
-    visibleMeshWideFOVBackgroundNode.visible = false;
-    scene.addChildNode(&visibleMeshWideFOVBackgroundNode);
+    // visibleMeshWideFOVBackgroundNode.frustumCulled = false;
+    // visibleMeshWideFOVBackgroundNode.visible = false;
+    // scene.addChildNode(&visibleMeshWideFOVBackgroundNode);
 
-    wideFovNode.frustumCulled = false;
-    scene.addChildNode(&wideFovNode);
+    // wideFovNode.frustumCulled = false;
+    // scene.addChildNode(&wideFovNode);
     
     for (int i = hiddenLayers - 1; i >= 0; --i) {
         refNodes[i].addEntity(&hybridReceiver.getMesh(i));

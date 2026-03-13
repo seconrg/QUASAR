@@ -296,47 +296,35 @@ HybridStreamer::HybridStreamer(
     statsCSVFile << std::endl;
     statsCSVFile.close();
 
-    // open the bitrate stats CSV file
-    bitrateStatsCSVFileName = "hybrid_streamer_bitrate_widefov.csv";
-    bitrateStatsCSVFile.open(bitrateStatsCSVFileName);
-    // write the header to the CSV file 
-    bitrateStatsCSVFile << "frameID";
-    bitrateStatsCSVFile << ",video_atlas_bitrate";
-    bitrateStatsCSVFile << ",visible_bitrate";
-    bitrateStatsCSVFile << ",visible_wide_fov_bitrate";
-    bitrateStatsCSVFile << ",depth_bitrate";
-    bitrateStatsCSVFile << ",depth_wide_fov_bitrate";
-    bitrateStatsCSVFile << ",proxy_bitrate";
-    bitrateStatsCSVFile << std::endl;
-    bitrateStatsCSVFile.close();
+    blackComputedCSVFileName = "hybrid_streamer_black_computed.csv";
+    blackComputedCSVFile.open(blackComputedCSVFileName);
+    blackComputedCSVFile << "frameID";
+    blackComputedCSVFile << ",total_black_area";
+    blackComputedCSVFile << std::endl;
+    blackComputedCSVFile.close();
 
-    // Given the projection matrix of wideFov and the normal projection matrix, 
-    // we can pre-compute the corners of the normal view space in the wide fov space
-    glm::mat4 wideFovProjectionMatrix = remoteCameraWideFOV.getProjectionMatrix();
-    glm::mat4 normalProjectionMatrix = remoteCamera.getProjectionMatrix();
-    glm::vec3 corners[4] = {
-        glm::vec3(0, 0, 1.0),
-        glm::vec3(quadSet.getSize().x, 0, 1.0),
-        glm::vec3(0, quadSet.getSize().y, 1.0),
-        glm::vec3(quadSet.getSize().x, quadSet.getSize().y, 1.0),
-    };
-    for (int i = 0; i < 4; i++) {
-        corners[i] = glm::vec3(corners[i].x, corners[i].y, corners[i].z);
-        corners[i] = glm::unProject(
-            corners[i], 
-            normalProjectionMatrix, 
-            glm::mat4(1.0f), 
-            glm::vec4(0.0f, 0.0f, remoteRenderer.width, remoteRenderer.height));
-        normalViewCornersInWideFoVImage[i] = glm::project(            corners[i],
-            wideFovProjectionMatrix, 
-            glm::mat4(1.0f), 
-            glm::vec4(0.0f, 0.0f, remoteRenderer.width, remoteRenderer.height));
-        
-        // spdlog::info("Corner in wide fov space: ({}, {}, {})", 
-        //     normalViewCornersInWideFoVImage[i].x, 
-        //     normalViewCornersInWideFoVImage[i].y, 
-        //     normalViewCornersInWideFoVImage[i].z);
+    bandwidthstats.proxy_size_by_layer.resize(hiddenLayers);
+    bandwidthstats.depth_offset_size_by_layer.resize(hiddenLayers);
+    bandwidthstats.alphaSize = 0;
+    bandwidthstats.totalSize = 0;
+
+    bandwidthStatsCSVFileName = "hybrid_streamer_bitrate.csv";
+    bandwidthStatsCSVFile.open(bandwidthStatsCSVFileName);
+    bandwidthStatsCSVFile << "frameID";
+    bandwidthStatsCSVFile << ",visible_bitrate";
+    bandwidthStatsCSVFile << ",wide_fov_bitrate";
+    bandwidthStatsCSVFile << ",visible_depth_bitrate";
+    bandwidthStatsCSVFile << ",wide_fov_depth_bitrate";
+    bandwidthStatsCSVFile << ",atlas_bitrate";
+    bandwidthStatsCSVFile << ",depth_peeling_bitrate";
+    // Add for bandwidth reference of each layer, above information is enough
+    for (int layer = 0; layer < hiddenLayers; layer++) { 
+        bandwidthStatsCSVFile << ",layer_" << layer << "_proxy_size";
+        bandwidthStatsCSVFile << ",layer_" << layer << "_depth_offset_size";
     }
+    
+    bandwidthStatsCSVFile << std::endl;
+    bandwidthStatsCSVFile.close();
 }
 
 void HybridStreamer::addMeshesToScene(Scene& localScene) {
@@ -888,6 +876,7 @@ void HybridStreamer::sendFrame(PoseReceiver::PoseInfo poseInfo) {
     // write alpha atlas and compressed depth offset to memory
     pose_id_t poseID = poseInfo.pose_id;
     timeStats.frameSize = writeToMemory(poseInfo, compressedData);
+    size_t compressedDataSize = compressedData.size();
 
     visibleVideoStreamerRT.sendFrame(poseID);
     visibleVideoStreamerWideFOV.sendFrame(poseID);
@@ -900,28 +889,39 @@ void HybridStreamer::sendFrame(PoseReceiver::PoseInfo poseInfo) {
         videoAtlasStreamerRT.sendFrame(poseID);
         send(compressedData);
     }
+    if (prevSendTimeMs != 0.0) {
+        double compressedDataSendTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - prevSendTimeMs);
+        double bitrateMbps = ((8.0 * compressedDataSize) / BYTES_PER_MEGABYTE) / timeutils::millisToSeconds(compressedDataSendTimeMs);
+        
+        // log out the bit rate of each part to the file csv
+        bandwidthStatsCSVFile.open(bandwidthStatsCSVFileName, std::ios::app);
+        bandwidthStatsCSVFile << frameID ;
+        bandwidthStatsCSVFile << "," <<  visibleVideoStreamerRT.stats.bitrateMbps;
+        bandwidthStatsCSVFile << "," << visibleVideoStreamerWideFOV.stats.bitrateMbps;
+        bandwidthStatsCSVFile << "," << depthStreamerRT.stats.bitrateMbps;
+        bandwidthStatsCSVFile << "," << depthStreamerWideFOV.stats.bitrateMbps;
+        bandwidthStatsCSVFile << "," << videoAtlasStreamerRT.stats.bitrateMbps;
+        bandwidthStatsCSVFile << "," << bitrateMbps;
 
-    // get the bitrate status of all streamers
-    double visibleBitRate = visibleVideoStreamerRT.stats.bitrateMbps;
-    double visibleWideFovBitRate = visibleVideoStreamerWideFOV.stats.bitrateMbps;
-    double videoAtlasBitRate = videoAtlasStreamerRT.stats.bitrateMbps;
-    double depthBitRate = depthStreamerRT.stats.bitrateMbps;
-    double depthWideFovBitRate = depthStreamerWideFOV.stats.bitrateMbps;
-    double proxyBitRate = this->DataStreamerTCP::stats.bitrateMbps;
+        // compute the bandwidith for sending videoAtlas 
+        for (int layer = 0; layer < hiddenLayers; layer++) { 
+            bandwidthStatsCSVFile << "," << bandwidthstats.proxy_size_by_layer[layer];
+            bandwidthStatsCSVFile << "," << bandwidthstats.depth_offset_size_by_layer[layer];
+        }
+        bandwidthStatsCSVFile << std::endl;
+        bandwidthStatsCSVFile.close();
+    }
 
-    // write the bitrate stats to the CSV file
-    bitrateStatsCSVFile.open(bitrateStatsCSVFileName, std::ios::app);
-    bitrateStatsCSVFile << frameID << ",";
-    bitrateStatsCSVFile << videoAtlasBitRate << ",";
-    bitrateStatsCSVFile << visibleBitRate << ",";
-    bitrateStatsCSVFile << visibleWideFovBitRate << ",";
-    bitrateStatsCSVFile << depthBitRate << ",";
-    bitrateStatsCSVFile << depthWideFovBitRate << ",";
-    bitrateStatsCSVFile << proxyBitRate << std::endl;
-    bitrateStatsCSVFile.close();
+    prevSendTimeMs = timeutils::getTimeMicros();
+
 }
 
 size_t HybridStreamer::writeToMemory(PoseReceiver::PoseInfo poseInfo, std::vector<char>& outputData) {
+    // reset the bandwidth stats
+    bandwidthstats.proxy_size_by_layer.clear();
+    bandwidthstats.depth_offset_size_by_layer.clear();
+    bandwidthstats.alphaSize = 0;
+    bandwidthstats.totalSize = 0;
 
     // Save camera data
     spdlog::info("Writing camera data to memory");
@@ -995,10 +995,13 @@ size_t HybridStreamer::writeToMemory(PoseReceiver::PoseInfo poseInfo, std::vecto
     }
 
     spdlog::info("Total data size: {}", outputData.size());
-
-
-
-
+    
+    for (int layer = 0; layer < hiddenLayers; layer++) {
+        bandwidthstats.proxy_size_by_layer[layer] = referenceFrames[layer].quads.size();
+        bandwidthstats.depth_offset_size_by_layer[layer] = referenceFrames[layer].depthOffsets.size();
+    }
+    bandwidthstats.alphaSize = alphaData.size();
+    bandwidthstats.totalSize = outputData.size();
     return outputData.size();
 }
 

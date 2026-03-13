@@ -1,10 +1,10 @@
 #!/bin/bash
 SCENES=(
-    "viking_village" 
-    "sponza" 
+    # "viking_village" 
+    # "sponza" 
     "robot_lab"
-    "sun_temple"
-    "san_miguel"
+    # "sun_temple"
+    # "san_miguel"
 )
 
 APP=./apps/scene_viewer/scene_viewer
@@ -18,7 +18,7 @@ if [ "$2" == "quasar" ]; then
     # PARAMS+=("--E-path")
 elif [ "$2" == "baseline" ]; then
     echo "Running Baseline build script..."
-    APP=./build/apps/scene_viewer/scene_viewer
+    APP=./apps/scene_viewer/scene_viewer
     POSE_PREDICTOR=()
 elif [ "$2" == "quadstream" ]; then
     echo "Running QuadStream build script..."
@@ -44,7 +44,7 @@ fi
 
 # Remove the directory if it exists
 for SCENE in "${SCENES[@]}"; do
-    DST_DIR=/media/csl-wanhanglu/SSD/quasarOutput/$1/$SCENE/$2$3
+    DST_DIR=/media/wuhaolu/c54fff3f-cab5-4dcf-94c3-c83855e5a9bd/quasarOutput/$1/$SCENE/$2$3
     rm -rf $DST_DIR
     mkdir -p $DST_DIR
     echo "Running build for scene: $SCENE"

@@ -240,6 +240,24 @@ QUASARStreamer::QUASARStreamer(
     }
     quasarStatsCSVFile << ",total_compress" << std::endl;
     quasarStatsCSVFile.close();
+
+    bandwidthstats.proxy_size_by_layer.resize(maxLayers);
+    bandwidthstats.depth_offset_size_by_layer.resize(maxLayers);
+    bandwidthstats.alphaSize = 0;
+    bandwidthstats.totalSize = 0;
+
+    bandwidthStatsCSVFileName = "quasar_streamer_bitrate.csv";
+    bandwidthStatsCSVFile.open(bandwidthStatsCSVFileName);
+    bandwidthStatsCSVFile << "frameID";
+    bandwidthStatsCSVFile << ",atlas_bitrate";
+    bandwidthStatsCSVFile << ",depth_peeling_bitrate";
+    // Add for bandwidth reference of each layer, above information is enough
+    for (int layer = 0; layer < maxLayers; layer++) {
+        bandwidthStatsCSVFile << ",layer_" << layer << "_proxy_size";
+        bandwidthStatsCSVFile << ",layer_" << layer << "_depth_offset_size";
+    }
+    bandwidthStatsCSVFile << std::endl;
+    bandwidthStatsCSVFile.close();
 }
 
 QUASARStreamer::~QUASARStreamer() {
@@ -582,12 +600,31 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
 void QUASARStreamer::sendFrame(PoseReceiver::PoseInfo poseInfo, bool createResidualFrame) {
 
     stats.frameSize = writeToMemory(poseInfo, createResidualFrame, compressedData);
+    size_t compressedDataSize = compressedData.size();
     if (!videoURL.empty() && !proxiesURL.empty()) {
         // Send atlas frame
         videoAtlasStreamerRT.sendFrame(poseInfo.pose_id);
         // Send proxies
         send(compressedData);
     }
+
+    if (prevSendTimeMs != 0.0) {
+        
+        double compressedDataSendTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - prevSendTimeMs);
+        double bitrateMbps = ((8.0 * compressedDataSize) / BYTES_PER_MEGABYTE) / timeutils::millisToSeconds(compressedDataSendTimeMs);
+
+        bandwidthStatsCSVFile.open(bandwidthStatsCSVFileName, std::ios::app);
+        bandwidthStatsCSVFile << frameID;
+        bandwidthStatsCSVFile << "," << videoAtlasStreamerRT.stats.bitrateMbps;
+        bandwidthStatsCSVFile << "," << bitrateMbps;
+        for (int layer = 0; layer < maxLayers; layer++) {
+            bandwidthStatsCSVFile << "," << bandwidthstats.proxy_size_by_layer[layer];
+            bandwidthStatsCSVFile << "," << bandwidthstats.depth_offset_size_by_layer[layer];
+        }
+        bandwidthStatsCSVFile << std::endl;
+        bandwidthStatsCSVFile.close();
+    }
+    prevSendTimeMs = timeutils::getTimeMicros();
 }
 
 void QUASARStreamer::writeTexturesToFiles(const Path& outputPath) {
@@ -715,5 +752,12 @@ size_t QUASARStreamer::writeToMemory(PoseReceiver::PoseInfo poseInfo, bool write
     }
 
     spdlog::debug("Total data size: {:.3f}MB", static_cast<float>(outputData.size()) / BYTES_PER_MEGABYTE);
+
+    for (int layer = 0; layer < maxLayers; layer++) {
+        bandwidthstats.proxy_size_by_layer[layer] = referenceFrames[layer].getTotalQuadsSize();
+        bandwidthstats.depth_offset_size_by_layer[layer] = referenceFrames[layer].getTotalDepthOffsetsSize();
+    }
+    bandwidthstats.alphaSize = alphaData.size();
+    bandwidthstats.totalSize = outputData.size();
     return outputData.size();
 }

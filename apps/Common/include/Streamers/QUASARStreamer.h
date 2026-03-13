@@ -88,9 +88,22 @@ public:
         QuadSet::Sizes proxySizes;
     } stats;
 
+    struct bandwidthStats {
+        std::vector<size_t> proxy_size_by_layer;
+        std::vector<size_t> depth_offset_size_by_layer;
+        size_t alphaSize = 0;
+        size_t totalSize = 0;
+    };
+    struct bandwidthStats bandwidthstats;
+
     // log out stats to CSV file
     std::ofstream quasarStatsCSVFile;
     std::string quasarStatsCSVFileName;
+
+    std::ofstream bandwidthStatsCSVFile;
+    std::string bandwidthStatsCSVFileName;
+    double prevSendTimeMs = 0.0;
+
     int frameID = 0;
 
     QUASARStreamer(

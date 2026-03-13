@@ -141,26 +141,26 @@ RenderStats MeshWarpStreamer::generateFrame() {
 
     nvtxRangePop();
 
-    nvtxRangePushA("Frame Generation");
-    meshWarpReconstructShader.bind();
-    {
-        meshWarpReconstructShader.setMat4("projection", remoteCamera.getProjectionMatrix());
-        meshWarpReconstructShader.setMat4("view", remoteCamera.getViewMatrix());
-        meshWarpReconstructShader.setFloat("near", remoteCamera.getNear());
-        meshWarpReconstructShader.setFloat("far", remoteCamera.getFar());
-    }
-    {
-        meshWarpReconstructShader.setFloat("depthThreshold", 0.05f);
-    }
-    {
-        meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, mesh.vertexBuffer);
-        meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, mesh.indexBuffer);
-    }
+    // nvtxRangePushA("Frame Generation");
+    // meshWarpReconstructShader.bind();
+    // {
+    //     meshWarpReconstructShader.setMat4("projection", remoteCamera.getProjectionMatrix());
+    //     meshWarpReconstructShader.setMat4("view", remoteCamera.getViewMatrix());
+    //     meshWarpReconstructShader.setFloat("near", remoteCamera.getNear());
+    //     meshWarpReconstructShader.setFloat("far", remoteCamera.getFar());
+    // }
+    // {
+    //     meshWarpReconstructShader.setFloat("depthThreshold", 0.05f);
+    // }
+    // {
+    //     meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, mesh.vertexBuffer);
+    //     meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, mesh.indexBuffer);
+    // }
 
-    meshWarpReconstructShader.dispatch(((adjustedSize.x + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
-                                       ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
-    meshWarpReconstructShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
-                                    GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
+    // meshWarpReconstructShader.dispatch(((adjustedSize.x + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
+    //                                    ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
+    // meshWarpReconstructShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
+    //                                 GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
     
     nvtxRangePop();
     return renderStats;

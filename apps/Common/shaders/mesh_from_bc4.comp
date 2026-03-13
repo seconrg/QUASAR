@@ -142,4 +142,31 @@ void main() {
     vertices[shaderIndex].position = worldCoord;
     vertices[shaderIndex].color    = vec3(1.0);
     vertices[shaderIndex].texCoord = viewToScreen(projection, viewCoord);
+
+    if (pixelCoord.x >= vertexGridSize.x - vertexGroupSize ||
+        pixelCoord.y >= vertexGridSize.y - vertexGroupSize) {
+        return;
+    }
+
+    /************************
+
+            tl -- tr
+            |    / |
+            |   c  |
+            |  /   |
+            bl -- br
+
+    ************************/
+    uint bottomLeftIdx  = shaderIndex;
+    uint bottomRightIdx = shaderIndex + 1u;
+    uint topLeftIdx     = shaderIndex + vertStride;
+    uint topRightIdx    = shaderIndex + vertStride + 1u;
+
+    indices[shaderIndex * INDICES_IN_A_QUAD + 0u] = topLeftIdx;
+    indices[shaderIndex * INDICES_IN_A_QUAD + 1u] = bottomLeftIdx;
+    indices[shaderIndex * INDICES_IN_A_QUAD + 2u] = topRightIdx;
+
+    indices[shaderIndex * INDICES_IN_A_QUAD + 3u] = topRightIdx;
+    indices[shaderIndex * INDICES_IN_A_QUAD + 4u] = bottomLeftIdx;
+    indices[shaderIndex * INDICES_IN_A_QUAD + 5u] = bottomRightIdx;
 }

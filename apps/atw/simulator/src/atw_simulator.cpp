@@ -404,70 +404,70 @@ int main(int argc, char** argv) {
 
         poseSendRecvSimulator.update(now);
 
-        // atwShader.bind();
-        // {
-        //     atwShader.setBool("atwEnabled", atwEnabled);
-        // }
-        // {
-        //     atwShader.setMat4("projectionInverse", camera.getProjectionMatrixInverse());
-        //     atwShader.setMat4("viewInverse", camera.getViewMatrixInverse());
-        // }
-        // {
-        //     atwShader.setMat4("remoteProjection", remoteCamera.getProjectionMatrix());
-        //     atwShader.setMat4("remoteView", remoteCamera.getViewMatrix());
-        // }
-        // {
-        //     atwShader.setTexture("videoTexture", renderTarget.colorTexture, 5);
-        //     atwShader.setTexture("depthTexture", renderTarget.depthStencilTexture, 6);
-        // }
-        // renderStats = remoteRenderer.drawToRenderTarget(atwShader, renderer.frameRT);
+        atwShader.bind();
+        {
+            atwShader.setBool("atwEnabled", atwEnabled);
+        }
+        {
+            atwShader.setMat4("projectionInverse", camera.getProjectionMatrixInverse());
+            atwShader.setMat4("viewInverse", camera.getViewMatrixInverse());
+        }
+        {
+            atwShader.setMat4("remoteProjection", remoteCamera.getProjectionMatrix());
+            atwShader.setMat4("remoteView", remoteCamera.getViewMatrix());
+        }
+        {
+            atwShader.setTexture("videoTexture", renderTarget.colorTexture, 5);
+            atwShader.setTexture("depthTexture", renderTarget.depthStencilTexture, 6);
+        }
+        renderStats = remoteRenderer.drawToRenderTarget(atwShader, renderer.frameRT);
 
         // write colorTexture Output for debugging   
         // clear the output texture
         // renderer.frameRT.clear(GL_COLOR_BUFFER_BIT);
 
-        nvtxRangePushA("ASW Compute Shader");
+        // nvtxRangePushA("ASW Compute Shader");
         // manually clean up everything
-        clearShader.bind();
-        {
-            clearShader.setImageTexture(0, renderer.frameRT.colorTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-            clearShader.dispatch((renderer.frameRT.colorTexture.width + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
-                                 (renderer.frameRT.colorTexture.height + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
-            clearShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-        }
+        // clearShader.bind();
+        // {
+        //     clearShader.setImageTexture(0, renderer.frameRT.colorTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        //     clearShader.dispatch((renderer.frameRT.colorTexture.width + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
+        //                          (renderer.frameRT.colorTexture.height + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
+        //     clearShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        // }
 
-        aswShader.bind();
-        {
-            atwShader.setBool("atwEnabled", atwEnabled);
-        }
-        {
-            aswShader.setImageTexture(0, renderer.frameRT.colorTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-            aswShader.setImageTexture(1, renderTarget.colorTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
-            aswShader.setImageTexture(2, depthTarget.colorTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
-        }
-        {
-            aswShader.setBool("unlinearizeDepth", true);
-            aswShader.setFloat("near", remoteCamera.getNear());
-            aswShader.setFloat("far", remoteCamera.getFar());
-        }
-        {
-            aswShader.setMat4("remoteProjectionInverse", remoteCamera.getProjectionMatrixInverse());
-            aswShader.setMat4("remoteViewInverse", remoteCamera.getViewMatrixInverse());
-            aswShader.setMat4("projection", camera.getProjectionMatrix());
-            aswShader.setMat4("view", camera.getViewMatrix());
-        }
-        {
-            aswShader.setImageTexture(0, renderer.frameRT.colorTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-            aswShader.setImageTexture(1, renderTarget.colorTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
-            aswShader.setImageTexture(2, renderTarget.depthStencilTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
-        }
+        // aswShader.bind();
+        // {
+        //     atwShader.setBool("atwEnabled", atwEnabled);
+        // }
+        // {
+        //     aswShader.setImageTexture(0, renderer.frameRT.colorTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        //     aswShader.setImageTexture(1, renderTarget.colorTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+        //     aswShader.setImageTexture(2, depthTarget.colorTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+        // }
+        // {
+        //     aswShader.setBool("unlinearizeDepth", true);
+        //     aswShader.setFloat("near", remoteCamera.getNear());
+        //     aswShader.setFloat("far", remoteCamera.getFar());
+        // }
+        // {
+        //     aswShader.setMat4("remoteProjectionInverse", remoteCamera.getProjectionMatrixInverse());
+        //     aswShader.setMat4("remoteViewInverse", remoteCamera.getViewMatrixInverse());
+        //     aswShader.setMat4("projection", camera.getProjectionMatrix());
+        //     aswShader.setMat4("view", camera.getViewMatrix());
+        // }
+        // {
+        //     aswShader.setImageTexture(0, renderer.frameRT.colorTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        //     aswShader.setImageTexture(1, renderTarget.colorTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+        //     aswShader.setImageTexture(2, renderTarget.depthStencilTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+        // }
 
-        aswShader.dispatch((renderTarget.colorTexture.width + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
-                           (renderTarget.colorTexture.height + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
+        // aswShader.dispatch((renderTarget.colorTexture.width + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
+        //                    (renderTarget.colorTexture.height + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
 
-        aswShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        // aswShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-        nvtxRangePop();
+        // nvtxRangePop();
 
         double startTime = window->getTime();
         tonemapper.drawToScreen(renderer);

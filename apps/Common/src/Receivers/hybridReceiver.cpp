@@ -146,6 +146,8 @@ HybridReceiver::HybridReceiver(
     meshWarpReconstructShader.setVec2("depthMapSize", glm::vec2(depthTexture.width, depthTexture.height));
     meshWarpReconstructShader.setUint("vertexGroupSize", vertexGroupSize);
 
+    // create visible mesh
+
     meshesBackground.reserve(hiddenLayers);
     glm::vec4 textureExtent(0.0f, 0.0f, 0.5f, 1.0f / 3.0f);
     for (int layer = 0; layer < hiddenLayers; layer++) {

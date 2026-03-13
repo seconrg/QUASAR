@@ -669,6 +669,7 @@ int main(int argc, char** argv) {
                 quasar.depthNodesHidLayer[layer-1].visible = showLayer && !hideReferenceFrame && showDepth;
             }
         }
+        // quasar.nodesHidLayer[maxLayers-1].visible = false;
         quasar.residualFrameNodeLocal.visible = showResidualFrame && !hideResidualFrame;
         quasar.residualFrameWireframeLocal.visible = quasar.residualFrameNodeLocal.visible && showWireframe;
 
