@@ -325,6 +325,31 @@ HybridStreamer::HybridStreamer(
     
     bandwidthStatsCSVFile << std::endl;
     bandwidthStatsCSVFile.close();
+
+    // Given the projection matrix of wideFov and the normal projection matrix, 
+    // we can pre-compute the corners of the normal view space in the wide fov space
+    glm::mat4 wideFovProjectionMatrix = remoteCameraWideFOV.getProjectionMatrix();
+    glm::mat4 normalProjectionMatrix = remoteCamera.getProjectionMatrix();
+    glm::vec3 corners[4] = {
+        glm::vec3(0, 0, 1.0),
+        glm::vec3(quadSet.getSize().x, 0, 1.0),
+        glm::vec3(0, quadSet.getSize().y, 1.0),
+        glm::vec3(quadSet.getSize().x, quadSet.getSize().y, 1.0),
+    };
+    for (int i = 0; i < 4; i++) {
+        corners[i] = glm::vec3(corners[i].x, corners[i].y, corners[i].z);
+        corners[i] = glm::unProject(
+            corners[i], 
+            normalProjectionMatrix, 
+            glm::mat4(1.0f), 
+            glm::vec4(0.0f, 0.0f, remoteRenderer.width, remoteRenderer.height));
+        normalViewCornersInWideFoVImage[i] = glm::project(
+            corners[i],
+            wideFovProjectionMatrix, 
+            glm::mat4(1.0f), 
+            glm::vec4(0.0f, 0.0f, remoteRenderer.width, remoteRenderer.height));
+    }
+        
 }
 
 void HybridStreamer::addMeshesToScene(Scene& localScene) {
@@ -657,7 +682,14 @@ RenderStats HybridStreamer::generateFrame() {
 
     remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
 
-    bool trimWideFov = false;
+    bool trimWideFov = true;
+
+    // render in full every 10 frames
+    if (frameID % 10 == 0) {
+        trimWideFov = false;
+    } else {
+        trimWideFov = true;
+    }
 
     // if (totalBlackArea > 10000.0f) {
     if (trimWideFov) {
@@ -746,16 +778,16 @@ RenderStats HybridStreamer::generateFrame() {
     remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_EQUAL, 1);
     } else {
     
-    remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
-    remoteRenderer.pipeline.writeMaskState.disableColorWrites();
-    // From the previous mesh, see what parts are visible in wide fov
-    renderStats += remoteRenderer.drawObjectsNoLighting(wideFovScene, remoteCameraWideFOV);
-    tonemapper.enableTonemapping(false);
-    tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisibleWideFov);
-    tonemapper.enableTonemapping(true);
-    
-    // use the previous generated stencil buffer to avoid drawing where wide fov has drawn
-    remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
+        remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
+        remoteRenderer.pipeline.writeMaskState.disableColorWrites();
+        // From the previous mesh, see what parts are visible in wide fov
+        renderStats += remoteRenderer.drawObjectsNoLighting(wideFovScene, remoteCameraWideFOV);
+        tonemapper.enableTonemapping(false);
+        tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisibleWideFov);
+        tonemapper.enableTonemapping(true);
+        
+        // use the previous generated stencil buffer to avoid drawing where wide fov has drawn
+        remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
     }
     remoteRenderer.pipeline.writeMaskState.enableColorWrites();
     

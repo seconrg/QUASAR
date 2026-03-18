@@ -30,6 +30,10 @@ layout(std430, binding = 2) buffer BC4Buffer {
     Block bc4buffer[];
 };
 
+// layout(std430, binding = 3) buffer Zbuffer {
+//     float zbuffer[];
+// };
+
 uniform mat4 projection;
 uniform mat4 projectionInverse;
 
@@ -48,6 +52,7 @@ const uvec2 blockSize = uvec2(8, 8);
 
 #define VERTICES_IN_A_QUAD  4u
 #define INDICES_IN_A_QUAD   6u
+#define DUPLICATES_PER_VERTEX 6u
 
 float nonlinearDepthFromLinear01(float linearDepth) {
     float z = linearDepth * (far - near) + near;
@@ -135,13 +140,23 @@ void main() {
     vec3 viewCoord  = ndcToView(projectionInverse, ndc, depth);
     vec3 worldCoord = viewToWorld(viewInverseDepth, viewCoord);
 
-    // Write vertex
+    // Write duplicated vertices for this logical grid vertex.
     uint vertStride  = vertexGridSize.x;
     uint shaderIndex = pixelCoord.y * vertStride + pixelCoord.x;
+    uint vertexBase = shaderIndex * DUPLICATES_PER_VERTEX;
+    vec2 screenCoord = viewToScreen(projection, viewCoord);
 
-    vertices[shaderIndex].position = worldCoord;
-    vertices[shaderIndex].color    = vec3(1.0);
-    vertices[shaderIndex].texCoord = viewToScreen(projection, viewCoord);
+    // For a single vertex:
+    // 0 belongs to the 
+    for (uint i = 0u; i < DUPLICATES_PER_VERTEX; ++i) {
+        uint duplicatedIndex = vertexBase + i;
+        vertices[duplicatedIndex].position = worldCoord;
+        vertices[duplicatedIndex].color    = vec3(1.0);
+        vertices[duplicatedIndex].texCoord = screenCoord;
+
+        // store the z value in view space for each duplicate
+        // zbuffer[duplicatedIndex] = viewCoord.z;
+    }
 
     if (pixelCoord.x >= vertexGridSize.x - vertexGroupSize ||
         pixelCoord.y >= vertexGridSize.y - vertexGroupSize) {
@@ -157,16 +172,18 @@ void main() {
             bl -- br
 
     ************************/
-    uint bottomLeftIdx  = shaderIndex;
-    uint bottomRightIdx = shaderIndex + 1u;
-    uint topLeftIdx     = shaderIndex + vertStride;
-    uint topRightIdx    = shaderIndex + vertStride + 1u;
+    uint bottomLeftBase  = (shaderIndex) * DUPLICATES_PER_VERTEX;
+    uint bottomRightBase = (shaderIndex + 1u) * DUPLICATES_PER_VERTEX;
+    uint topLeftBase     = (shaderIndex + vertStride) * DUPLICATES_PER_VERTEX;
+    uint topRightBase    = (shaderIndex + vertStride + 1u) * DUPLICATES_PER_VERTEX;
 
-    indices[shaderIndex * INDICES_IN_A_QUAD + 0u] = topLeftIdx;
-    indices[shaderIndex * INDICES_IN_A_QUAD + 1u] = bottomLeftIdx;
-    indices[shaderIndex * INDICES_IN_A_QUAD + 2u] = topRightIdx;
+    // Triangle 1 uses duplicate slots 0,1,2
+    indices[shaderIndex * INDICES_IN_A_QUAD + 0u] = topLeftBase + 2u;
+    indices[shaderIndex * INDICES_IN_A_QUAD + 1u] = bottomLeftBase + 4u;
+    indices[shaderIndex * INDICES_IN_A_QUAD + 2u] = topRightBase + 0u;
 
-    indices[shaderIndex * INDICES_IN_A_QUAD + 3u] = topRightIdx;
-    indices[shaderIndex * INDICES_IN_A_QUAD + 4u] = bottomLeftIdx;
-    indices[shaderIndex * INDICES_IN_A_QUAD + 5u] = bottomRightIdx;
+    // Triangle 2 uses different duplicate slots 3,4,5
+    indices[shaderIndex * INDICES_IN_A_QUAD + 3u] = topRightBase + 1u;
+    indices[shaderIndex * INDICES_IN_A_QUAD + 4u] = bottomLeftBase + 3u;
+    indices[shaderIndex * INDICES_IN_A_QUAD + 5u] = bottomRightBase + 5u;
 }

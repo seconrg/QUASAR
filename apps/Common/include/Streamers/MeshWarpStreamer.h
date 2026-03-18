@@ -70,6 +70,10 @@ private:
 
     Mesh mesh;
     UnlitMaterial meshMaterial;
+    // NoRubberSheetMaterial meshMaterial;
+    // NoRubberSheetMesh mesh;
+
+    int frameID = 0;
 };
 
 } // namespace quasar

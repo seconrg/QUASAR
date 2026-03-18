@@ -71,8 +71,8 @@ MeshWarpStreamer::MeshWarpStreamer(
     })
     , meshMaterial({ .baseColorTexture = &renderTarget.colorTexture })
     , mesh({
-        .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1),
-        .maxIndices = (adjustedSize.x * adjustedSize.y + adjustedSize.x - 1) * 2 * 3,
+        .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1) * 6, 
+        .maxIndices = (adjustedSize.x * adjustedSize.y + adjustedSize.x - 1) * 2 * 3 * 6,
         .material = &meshMaterial,
         .usage = GL_DYNAMIC_DRAW,
     })
@@ -91,6 +91,7 @@ MeshWarpStreamer::MeshWarpStreamer(
 }
 
 RenderStats MeshWarpStreamer::generateFrame() {
+    frameID++;
     // Reset stats
     stats = { 0 };
     RenderStats renderStats;
@@ -118,6 +119,8 @@ RenderStats MeshWarpStreamer::generateFrame() {
 
     nvtxRangePushA("Vertex generation");
     startTime = timeutils::getTimeMicros();
+    spdlog::info("For frame ID: {}, resconstruct pose is: {}, {}, {}", frameID, remoteCamera.getViewMatrix()[3][0], remoteCamera.getViewMatrix()[3][1], remoteCamera.getViewMatrix()[3][2]);
+    spdlog::info("For frame ID: {}, resconstruct orientation is is: {}, {}, {}", frameID, remoteCamera.getRotationEuler().x, remoteCamera.getRotationEuler().y, remoteCamera.getRotationEuler().z);
     meshFromBC4Shader.bind();
     {
         meshFromBC4Shader.setMat4("projection", remoteCamera.getProjectionMatrix());
@@ -131,6 +134,8 @@ RenderStats MeshWarpStreamer::generateFrame() {
         meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, mesh.vertexBuffer);
         meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, mesh.indexBuffer);
         meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 2, depthStreamerRT.bc4CompressedBuffer);
+        // meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 3, mesh.zBuffer);
+
     }
     // Dispatch compute shader to generate vertices and indices for mesh
     meshFromBC4Shader.dispatch(((adjustedSize.x + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
