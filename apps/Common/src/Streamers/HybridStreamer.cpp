@@ -137,6 +137,13 @@ HybridStreamer::HybridStreamer(
             "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
         }
     })
+    , closestZBufferShader({
+        .computeCodeData = SHADER_COMMON_MESHWARP_COMPUTEDIST_COMP,
+        .computeCodeSize = SHADER_COMMON_MESHWARP_COMPUTEDIST_COMP_len,
+        .defines = {
+            "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
+        }
+    })
     , quadMaskShader({
         .vertexCodeData = SHADER_COMMON_QUAD_MASK_VERT,
         .vertexCodeSize = SHADER_COMMON_QUAD_MASK_VERT_len,
@@ -157,8 +164,8 @@ HybridStreamer::HybridStreamer(
     , visibleMeshMaterial({ .baseColorTexture = &frameRTVisible.colorTexture })
     , visibleMeshWideFOVMaterial({ .baseColorTexture = &frameRTVisibleWideFov.colorTexture })
     , visibleMesh({
-        .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1),
-        .maxIndices = (adjustedSize.x * adjustedSize.y + adjustedSize.x - 1) * 2 * 3,
+        .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1) * 6,
+        .maxIndices = (adjustedSize.x * adjustedSize.y + adjustedSize.x - 1) * 2 * 3 * 6,
         .material = &visibleMeshMaterial,
         .usage = GL_DYNAMIC_DRAW,
     })
@@ -402,7 +409,7 @@ inline subFrameIndex getNextSubFrameIndex(
     return nextIndex;
 }
 
-void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, BC4DepthStreamer &depthStreamer)
+void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, BC4DepthStreamer &depthStreamer, bool useNoRubberSheet)
 {
     RenderStats renderStats;
 
@@ -431,25 +438,45 @@ void HybridStreamer::reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, 
     nvtxRangePop();
 
     nvtxRangePushA("Frame Generation");
-    meshWarpReconstructShader.bind();
-    {
-        meshWarpReconstructShader.setMat4("projection", camera.getProjectionMatrix());
-        meshWarpReconstructShader.setMat4("view", camera.getViewMatrix());
-        meshWarpReconstructShader.setFloat("near", camera.getNear());
-        meshWarpReconstructShader.setFloat("far", camera.getFar());
-    }
-    {
-        meshWarpReconstructShader.setFloat("depthThreshold", 0.05f);
-    }
-    {
-        meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, mesh.vertexBuffer);
-        meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, mesh.indexBuffer);
-    }
 
-    meshWarpReconstructShader.dispatch(((adjustedSize.x + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
-                                       ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
-    meshWarpReconstructShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
-                                    GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
+    if (useNoRubberSheet) {
+        // Covert mesh into no rubber sheet mesh
+        NoRubberSheetMesh &noRubberSheetMesh = dynamic_cast<NoRubberSheetMesh &>(mesh);
+        uint vertexGridSizeX = adjustedSize.x + 1u;
+        uint vertexGridSizeY = adjustedSize.y + 1u;
+        uint totalVertices = vertexGridSizeX * vertexGridSizeY * 6u;
+    
+        closestZBufferShader.bind();
+        {
+            closestZBufferShader.setUint("vertStride", vertexGridSizeX);
+            closestZBufferShader.setUint("totalVertices", totalVertices);
+            closestZBufferShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, noRubberSheetMesh.zBuffer);
+            closestZBufferShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, noRubberSheetMesh.closestZBuffer);
+        }
+        closestZBufferShader.dispatch((totalVertices + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1, 1);
+        closestZBufferShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    } else {
+        meshWarpReconstructShader.bind();
+        {
+            meshWarpReconstructShader.setMat4("projection", camera.getProjectionMatrix());
+            meshWarpReconstructShader.setMat4("view", camera.getViewMatrix());
+            meshWarpReconstructShader.setFloat("near", camera.getNear());
+            meshWarpReconstructShader.setFloat("far", camera.getFar());
+        }
+        {
+            meshWarpReconstructShader.setFloat("depthThreshold", 0.05f);
+        }
+        {
+            meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, mesh.vertexBuffer);
+            meshWarpReconstructShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, mesh.indexBuffer);
+        }
+
+        meshWarpReconstructShader.dispatch(((adjustedSize.x + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP,
+                                        ((adjustedSize.y + 1) + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1);
+        meshWarpReconstructShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
+                                        GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT);
+    }
     nvtxRangePop();
 
     glFinish();
@@ -550,7 +577,7 @@ RenderStats HybridStreamer::generateFrame() {
 
     // Reconstruct visible mesh using meshwarp
     startTime = timeutils::getTimeMicros();
-    reconstructMeshwarp(remoteCamera, visibleMesh, depthStreamerRT);
+    reconstructMeshwarp(remoteCamera, visibleMesh, depthStreamerRT, true);
     double visibleMeshReconstructTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
     timeStats.totalRenderTimeMs += visibleMeshReconstructTimeMs;
     timeStats.visibleMeshGenFrameStats.createTimeMs = visibleMeshReconstructTimeMs;
@@ -818,7 +845,7 @@ RenderStats HybridStreamer::generateFrame() {
 
     // // Reconstruct wide fov visible mesh using meshwarp
     startTime = timeutils::getTimeMicros();
-    reconstructMeshwarp(remoteCameraWideFOV, visibleMeshWideFOV, depthStreamerWideFOV);
+    reconstructMeshwarp(remoteCameraWideFOV, visibleMeshWideFOV, depthStreamerWideFOV,false);
     double wideFovMeshReconstructTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
     timeStats.totalRenderTimeMs += wideFovMeshReconstructTimeMs;
     timeStats.wideFovMeshGenFrameStats.createTimeMs = wideFovMeshReconstructTimeMs;

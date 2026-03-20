@@ -78,6 +78,8 @@ void main() {
         }
         else {
             color = texture(videoTexture, TexCoordRemote).rgb;
+            // for debugging write all color as blue
+            color = vec3(0.0, 0.0, 1.0);
         }
     }
 

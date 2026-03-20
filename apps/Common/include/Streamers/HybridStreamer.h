@@ -18,6 +18,8 @@
 #include <PostProcessing/ShowNormalsEffect.h>
 #include <Primitives/FullScreenQuad.h>
 #include <Shaders/Shader.h>
+#include <NoRubberSheet/noRubberSheetMesh.h>
+#include <NoRubberSheet/noRubberSheetMaterial.h>
 
 #include <Codecs/AlphaCodec.h>
 
@@ -229,20 +231,25 @@ private:
     /* Information used for local debugging and simulation*/
     ComputeShader meshFromBC4Shader;
     ComputeShader meshWarpReconstructShader;
+    ComputeShader closestZBufferShader;
 
     // RenderTarget renderTarget;
     // RenderTarget renderTargetWideFOV;
 
-    Mesh visibleMesh;
+    // Mesh visibleMesh;
+    // UnlitMaterial visibleMeshMaterial;
+
     Mesh visibleMeshWideFOV;
-    UnlitMaterial visibleMeshMaterial;
     UnlitMaterial visibleMeshWideFOVMaterial;
+
+    NoRubberSheetMaterial visibleMeshMaterial;
+    NoRubberSheetMesh visibleMesh;
 
     // visible and wide fov nodes
     Node visibleMeshNode;
     Node visibleMeshWideFOVNode;
 
-    void reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, BC4DepthStreamer &depthStreamer);
+    void reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, BC4DepthStreamer &depthStreamer, bool useNoRubberSheet);
 
     Shader quadMaskShader;
     FullScreenQuad quadMaskQuad;

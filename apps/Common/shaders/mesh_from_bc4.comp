@@ -30,9 +30,9 @@ layout(std430, binding = 2) buffer BC4Buffer {
     Block bc4buffer[];
 };
 
-// layout(std430, binding = 3) buffer Zbuffer {
-//     float zbuffer[];
-// };
+layout(std430, binding = 3) buffer Zbuffer {
+    float zbuffer[];
+};
 
 uniform mat4 projection;
 uniform mat4 projectionInverse;
@@ -155,7 +155,7 @@ void main() {
         vertices[duplicatedIndex].texCoord = screenCoord;
 
         // store the z value in view space for each duplicate
-        // zbuffer[duplicatedIndex] = viewCoord.z;
+        zbuffer[duplicatedIndex] = viewCoord.z;
     }
 
     if (pixelCoord.x >= vertexGridSize.x - vertexGroupSize ||

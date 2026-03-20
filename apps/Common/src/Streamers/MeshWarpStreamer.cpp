@@ -1,3 +1,4 @@
+#include "Utils/Platform.h"
 #include <Streamers/MeshWarpStreamer.h>
 #include <shaders_common.h>
 #include <nvtx3/nvToolsExt.h>
@@ -69,6 +70,13 @@ MeshWarpStreamer::MeshWarpStreamer(
             "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
         }
     })
+    , closestZBufferShader({
+        .computeCodeData = SHADER_COMMON_MESHWARP_COMPUTEDIST_COMP,
+        .computeCodeSize = SHADER_COMMON_MESHWARP_COMPUTEDIST_COMP_len,
+        .defines = {
+            "#define THREADS_PER_LOCALGROUP " + std::to_string(THREADS_PER_LOCALGROUP)
+        }
+    })
     , meshMaterial({ .baseColorTexture = &renderTarget.colorTexture })
     , mesh({
         .maxVertices = (adjustedSize.x + 1) * (adjustedSize.y + 1) * 6, 
@@ -88,6 +96,11 @@ MeshWarpStreamer::MeshWarpStreamer(
     meshWarpReconstructShader.setBool("unlinearizeDepth", true);
     meshWarpReconstructShader.setVec2("depthMapSize", depthMapSize);
     meshWarpReconstructShader.setUint("vertexGroupSize", params.vertexGroupSize);
+
+    // // compute the vertexStride and set it to mesh
+    // uint adjustedSizeX = depthMapSize.x / params.vertexGroupSize;
+    // uint vertexGridSizeX = adjustedSizeX + 1;
+    // mesh.setVertexStride(vertexGridSizeX);
 }
 
 RenderStats MeshWarpStreamer::generateFrame() {
@@ -134,7 +147,7 @@ RenderStats MeshWarpStreamer::generateFrame() {
         meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, mesh.vertexBuffer);
         meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, mesh.indexBuffer);
         meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 2, depthStreamerRT.bc4CompressedBuffer);
-        // meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 3, mesh.zBuffer);
+        meshFromBC4Shader.setBuffer(GL_SHADER_STORAGE_BUFFER, 3, mesh.zBuffer);
 
     }
     // Dispatch compute shader to generate vertices and indices for mesh
@@ -145,6 +158,20 @@ RenderStats MeshWarpStreamer::generateFrame() {
     stats.totalGenMeshTime = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
     nvtxRangePop();
+
+    uint vertexGridSizeX = adjustedSize.x + 1u;
+    uint vertexGridSizeY = adjustedSize.y + 1u;
+    uint totalVertices = vertexGridSizeX * vertexGridSizeY * 6u;
+
+    closestZBufferShader.bind();
+    {
+        closestZBufferShader.setUint("vertStride", vertexGridSizeX);
+        closestZBufferShader.setUint("totalVertices", totalVertices);
+        closestZBufferShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 0, mesh.zBuffer);
+        closestZBufferShader.setBuffer(GL_SHADER_STORAGE_BUFFER, 1, mesh.closestZBuffer);
+    }
+    closestZBufferShader.dispatch((totalVertices + THREADS_PER_LOCALGROUP - 1) / THREADS_PER_LOCALGROUP, 1, 1);
+    closestZBufferShader.memoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
     // nvtxRangePushA("Frame Generation");
     // meshWarpReconstructShader.bind();

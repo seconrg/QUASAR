@@ -1,0 +1,66 @@
+#include "camera.glsl"
+
+#extension GL_KHR_vulkan_glsl : enable
+
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aColor;
+layout(location = 2) in vec2 aTexCoord;
+layout(location = 3) in vec3 aNormal;
+layout(location = 4) in vec3 aTangent;
+layout(location = 5) in vec3 aBitangent;
+layout(location = 6) in float zBuffer;
+layout(location = 7) in float closestZBuffer;
+
+#ifdef ANDROID
+layout(num_views = 2) in;
+#endif
+
+out VertexData {
+    flat uint DrawID;
+    vec2 TexCoord;
+    vec3 PositionView;
+    vec3 PositionWorld;
+    vec3 Color;
+    vec3 Normal;
+    vec3 Tangent;
+    vec3 BiTangent;
+    vec4 PositionLightSpace;
+    float ClosestZ;
+    float InterpolatedZ;
+} vsOut;
+
+uniform uint drawID;
+
+uniform mat4 model;
+uniform mat3 normalMatrix;
+uniform mat4 lightSpaceMatrix;
+
+void main() {
+    mat4 modelMatrix = model;
+#ifndef ANDROID
+    mat4 viewMatrix = camera.view;
+    mat4 projectionMatrix = camera.projection;
+#else
+    mat4 viewMatrix = camera.view[gl_ViewID_OVR];
+    mat4 projectionMatrix = camera.projection[gl_ViewID_OVR];
+#endif
+
+    vec4 worldPos = modelMatrix * vec4(aPos, 1.0);
+    vec4 viewPos = viewMatrix * worldPos;
+
+    vsOut.DrawID = drawID;
+    vsOut.TexCoord = aTexCoord;
+    vsOut.PositionView = viewPos.xyz;
+    vsOut.PositionWorld = worldPos.xyz;
+    vsOut.Color = aColor;
+    vsOut.Normal = normalize(normalMatrix * aNormal);
+    vsOut.Tangent = normalize(normalMatrix * aTangent);
+    vsOut.BiTangent = normalize(normalMatrix * aBitangent);
+
+    vsOut.PositionLightSpace = lightSpaceMatrix * vec4(vsOut.PositionWorld, 1.0);
+
+    vsOut.ClosestZ = closestZBuffer;
+    vsOut.InterpolatedZ = zBuffer;
+
+    gl_Position = projectionMatrix * viewMatrix * vec4(vsOut.PositionWorld, 1.0);
+}

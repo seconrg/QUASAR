@@ -53,3 +53,5 @@ ImportExecutables-*.cmake
 *txt
 
 *png
+
+*/__MACOSX/*

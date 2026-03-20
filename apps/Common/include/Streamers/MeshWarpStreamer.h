@@ -11,6 +11,9 @@
 #include <PostProcessing/ShowDepthEffect.h>
 #include <Shaders/ComputeShader.h>
 
+#include <NoRubberSheet/noRubberSheetMaterial.h>
+#include <NoRubberSheet/noRubberSheetMesh.h>
+
 namespace quasar {
 
 struct MeshWarpStreamerCreateParams {
@@ -67,11 +70,12 @@ private:
 
     ComputeShader meshFromBC4Shader;
     ComputeShader meshWarpReconstructShader;
+    ComputeShader closestZBufferShader;
 
-    Mesh mesh;
-    UnlitMaterial meshMaterial;
-    // NoRubberSheetMaterial meshMaterial;
-    // NoRubberSheetMesh mesh;
+    // Mesh mesh;
+    // UnlitMaterial meshMaterial;
+    NoRubberSheetMaterial meshMaterial;
+    NoRubberSheetMesh mesh;
 
     int frameID = 0;
 };

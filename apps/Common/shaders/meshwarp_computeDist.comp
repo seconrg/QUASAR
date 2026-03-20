@@ -1,0 +1,81 @@
+#include "constants.glsl"
+#include "camera_utils.glsl"
+
+#extension GL_KHR_vulkan_glsl : enable
+
+layout(local_size_x = THREADS_PER_LOCALGROUP, local_size_y = THREADS_PER_LOCALGROUP, local_size_z = 1) in;
+
+struct Vertex {
+    vec3 position;
+    vec3 color;
+    vec2 texCoord;
+    vec3 normal;
+    vec3 tangent;
+    vec3 bitangent;
+};
+
+layout(std430, binding = 0) buffer zBufferData {
+    float zBuffer[];
+};
+
+layout(std430, binding = 1) buffer ClosestZBufferData {
+    float closestZ[];
+};
+
+
+uniform uint vertStride;
+uniform uint totalVertices;
+
+
+void main() {
+
+    uint globalVertexIndex = gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
+    if (globalVertexIndex >= totalVertices) return;
+
+    // 
+    // get the vertex index that the vertex belongs to 
+    uint shaderIndex = globalVertexIndex / 6;
+    uint vertexIndex = globalVertexIndex % 6;
+
+    uint vert1Idx, vert2Idx;
+    // we know the position of the vertex in the triangle
+    if (vertexIndex == 0 ) {
+        uint topLeftIdx = (shaderIndex -1) * 6 + 2u;
+        uint bottomLeftIdx = (shaderIndex -1 -vertStride) * 6 + 4u; 
+        vert1Idx = topLeftIdx;
+        vert2Idx = bottomLeftIdx;
+    } else if (vertexIndex == 1) {
+        uint bottomLeftIdx = (shaderIndex -1 - vertStride) * 6 + 3u;
+        uint bottomRightIdx = (shaderIndex - vertStride) * 6 + 5u;
+        vert1Idx = bottomLeftIdx;
+        vert2Idx = bottomRightIdx;
+    } else if (vertexIndex == 2) {
+        uint topRightIdx = (shaderIndex +1) * 6 + 0u;
+        uint bottomLeftIdx = (shaderIndex - vertStride) * 6 + 5u;
+        vert1Idx = topRightIdx;
+        vert2Idx = bottomLeftIdx;
+    } else if (vertexIndex == 3) {
+        uint topRightIdx = (shaderIndex +1 + vertStride) * 6 + 1u;
+        uint bottomRightIdx = (shaderIndex +1) * 6 + 5u;
+        vert1Idx = topRightIdx;
+        vert2Idx = bottomRightIdx;
+    } else if (vertexIndex == 4) {
+        uint topLeftIdx = (shaderIndex + vertStride) * 6 + 2u;
+        uint topRightIdx = (shaderIndex + vertStride +1) * 6 + 0u;
+        vert1Idx = topLeftIdx;
+        vert2Idx = topRightIdx;
+    } else if (vertexIndex == 5) {
+        uint bottomLeftIdx = (shaderIndex - 1) * 6 + 1u;
+        uint topRightIdx = (shaderIndex + vertStride) * 6 + 3u;
+        vert1Idx = bottomLeftIdx;
+        vert2Idx = topRightIdx;
+    }
+    // we got the three indices of the triangle
+    // compute the closest z value here
+
+    float closestZData = min(zBuffer[vert1Idx], zBuffer[vert2Idx]);
+    closestZData = min(closestZData, zBuffer[globalVertexIndex]);
+
+    closestZ[globalVertexIndex] = closestZData;
+    
+}
