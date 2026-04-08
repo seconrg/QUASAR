@@ -62,6 +62,8 @@ int main(int argc, char** argv) {
     args::ValueFlag<float> remoteFOVWideIn(parser, "remote-fov-wide", "Remote camera FOV in degrees for wide fov", {'W', "remote-fov-wide"}, 140.0f);
     args::ValueFlag<int> maxHiddenLayersIn(parser, "layers", "Max hidden layers", {'n', "max-hidden-layers"}, 3);
     args::ValueFlag<float> viewSphereDiameterIn(parser, "view-sphere-diameter", "Size of view sphere in m", {'B', "view-size"}, 0.5f);
+    args::ValueFlag<std::string> wideFovDumpDirIn(
+        parser, "path", "Dump wide-FOV tonemapped PNG per frame (empty = off)", {"wide-fov-dump-dir"}, "");
     // args::ValueFlag<std::string> EIn(parser, "E", "Path to E's size for each depth peeling call", {'E', "E-path"}, "");
     
     try {
@@ -171,6 +173,12 @@ int main(int argc, char** argv) {
     float remoteFOVWide = args::get(remoteFOVWideIn);
     float viewSphereDiameter = args::get(viewSphereDiameterIn);
 
+    std::string wideFovDumpDir = args::get(wideFovDumpDirIn);
+    if (wideFovDumpDir.empty()) {
+        wideFovDumpDir = outputPath.str() + "/widefov_dump";
+    }
+    
+
     HybridStreamer hybridStreamer(
         quadSet,
         remoteRendererDP, remoteRenderer, remoteScene, remoteCamera,
@@ -178,6 +186,7 @@ int main(int argc, char** argv) {
             .hiddenLayers = maxHidLayers,
             .viewSphereDiameter = viewSphereDiameter,
             .wideFOV = remoteFOVWide,
+            .wideFovImageDumpDir = wideFovDumpDir,
         });
 
     // Node node(&hybridStreamer.getVisibleMesh());

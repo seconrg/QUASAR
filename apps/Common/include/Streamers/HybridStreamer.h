@@ -50,6 +50,8 @@ struct HybridStreamerCreateParams {
     std::string videoWideFovURL = "";
     std::string depthWideFovURL = "";
 
+    /// If non-empty, write wide-FOV tonemapped color PNGs each frame (`widefov_<frameID>.png`).
+    std::string wideFovImageDumpDir;
 };
 
 class HybridStreamer : public DataStreamerTCP {
@@ -120,6 +122,7 @@ public:
     
     std::string videoWideFovURL;
     std::string depthWideFovURL;
+    std::string wideFovImageDumpDir;
 
     struct genFrameStats {
         double renderTimeMs;
@@ -249,7 +252,7 @@ private:
     Node visibleMeshNode;
     Node visibleMeshWideFOVNode;
 
-    void reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, BC4DepthStreamer &depthStreamer, bool useNoRubberSheet);
+    void reconstructMeshwarp(PerspectiveCamera &camera, Mesh &mesh, BC4DepthStreamer &depthStreamer, bool useNoRubberSheet = false);
 
     Shader quadMaskShader;
     FullScreenQuad quadMaskQuad;

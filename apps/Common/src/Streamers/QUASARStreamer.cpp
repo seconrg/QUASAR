@@ -1,4 +1,25 @@
+#include "RenderTargets/FrameRenderTarget.h"
 #include <Streamers/QUASARStreamer.h>
+
+#include <cmath>
+
+namespace {
+
+/// Shoelace area for quad vertex order (0,1), (1,3), (3,2), (2,0) — matches quad_mask.vert triangle strip.
+double narrowReprojectionQuadAreaPx2(const glm::vec3 c[4]) {
+    const glm::vec2 v[4] = {
+        glm::vec2(c[0]), glm::vec2(c[1]), glm::vec2(c[3]), glm::vec2(c[2]),
+    };
+    double a = 0.0;
+    for (int i = 0; i < 4; i++) {
+        const int j = (i + 1) % 4;
+        a += static_cast<double>(v[i].x) * static_cast<double>(v[j].y);
+        a -= static_cast<double>(v[j].x) * static_cast<double>(v[i].y);
+    }
+    return std::abs(a) * 0.5;
+}
+
+} // namespace
 
 using namespace quasar;
 
@@ -12,7 +33,10 @@ QUASARStreamer::QUASARStreamer(
     : quadSet(quadSet)
     , videoURL(params.videoURL)
     , proxiesURL(params.proxiesURL)
+    , wideFovImageDumpDir(params.wideFovImageDumpDir)
     , maxLayers(params.maxLayers)
+    , wideFovPoseLagFrames(params.wideFovPoseLagFrames)
+    , wideFovUpdatePeriodFrames(params.wideFovUpdatePeriodFrames != 0u ? params.wideFovUpdatePeriodFrames : 1u)
     , remoteRenderer(remoteRenderer)
     , remoteRendererDP(remoteRendererDP)
     , remoteScene(remoteScene)
@@ -95,6 +119,23 @@ QUASARStreamer::QUASARStreamer(
         .minFilter = GL_NEAREST,
         .magFilter = GL_NEAREST,
     })
+    , quadMaskShader({
+        .vertexCodeData = SHADER_COMMON_QUAD_MASK_VERT,
+        .vertexCodeSize = SHADER_COMMON_QUAD_MASK_VERT_len,
+        .fragmentCodeData = SHADER_COMMON_QUAD_MASK_FRAG,
+        .fragmentCodeSize = SHADER_COMMON_QUAD_MASK_FRAG_len,
+    })
+    , debugMaskRT({
+        .width = remoteRenderer.width,
+        .height = remoteRenderer.height,
+        .internalFormat = GL_RGBA16F,
+        .format = GL_RGBA,
+        .type = GL_HALF_FLOAT,
+        .wrapS = GL_CLAMP_TO_EDGE,
+        .wrapT = GL_CLAMP_TO_EDGE,
+        .minFilter = GL_LINEAR,
+        .magFilter = GL_LINEAR,
+    })
     , alphaCodec(alphaAtlasRT.width, alphaAtlasRT.height)
     , depthMesh(quadSet.getSize(), glm::vec4(0.0f, 1.0f, 0.0f, 1.0f))
     , residualFrameMesh(quadSet, residualFrameRT_noTone.colorTexture, residualFrameRT_noTone.alphaTexture)
@@ -127,6 +168,7 @@ QUASARStreamer::QUASARStreamer(
     remoteCameraWideFOV.setProjectionMatrix(remoteCamera.getProjectionMatrix());
     remoteCameraWideFOV.setFovyDegrees(params.wideFOV);
     remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
+    wideFovReuseViewMatrix = remoteCamera.getViewMatrix();
 
     // Setup hidden layers and wide fov RTs
     RenderTargetCreateParams rtParams = {
@@ -210,6 +252,15 @@ QUASARStreamer::QUASARStreamer(
         depthNodesHidLayer[layer].primitiveType = GL_POINTS;
     }
 
+    if (numHidLayers > 0) {
+        const uint wideLayerIdx = numHidLayers - 1;
+        wideFovQuadTexelUsageMaterial = std::make_unique<QuadTexelUsageMaterial>(QuadMaterialCreateParams{
+            .baseColorTexture = &frameRTsHidLayer_noTone[wideLayerIdx].colorTexture,
+            .alphaTexture = &frameRTsHidLayer_noTone[wideLayerIdx].alphaTexture,
+        });
+        nodesHidLayer[wideLayerIdx].overrideMaterial = wideFovQuadTexelUsageMaterial.get();
+    }
+
     // Setup scene to use as mask for wide fov camera
     for (int i = 0; i < meshScenes.size(); i++) {
         wideFovNodes.emplace_back(&referenceFrameMeshes[i]);
@@ -229,7 +280,10 @@ QUASARStreamer::QUASARStreamer(
         spdlog::info("Created QUASARStreamer that sends to URL: tcp://{}", proxiesURL);
     }
 
-    quasarStatsCSVFileName = "quasar_stats.csv";
+    // strip by the last / in the wideFovImageDumpDir
+    std::string outputDir = wideFovImageDumpDir.substr(0, wideFovImageDumpDir.find_last_of('/'));
+
+    quasarStatsCSVFileName = outputDir + "/quasar_stats.csv";
     quasarStatsCSVFile.open(quasarStatsCSVFileName);
     quasarStatsCSVFile << "frame_id";
     quasarStatsCSVFile << ",visible_render";
@@ -245,8 +299,10 @@ QUASARStreamer::QUASARStreamer(
     bandwidthstats.depth_offset_size_by_layer.resize(maxLayers);
     bandwidthstats.alphaSize = 0;
     bandwidthstats.totalSize = 0;
+    
+    // add output dir to bandwidth stats
 
-    bandwidthStatsCSVFileName = "quasar_streamer_bitrate.csv";
+    bandwidthStatsCSVFileName = outputDir + "/quasar_streamer_bitrate.csv";
     bandwidthStatsCSVFile.open(bandwidthStatsCSVFileName);
     bandwidthStatsCSVFile << "frameID";
     bandwidthStatsCSVFile << ",atlas_bitrate";
@@ -258,6 +314,30 @@ QUASARStreamer::QUASARStreamer(
     }
     bandwidthStatsCSVFile << std::endl;
     bandwidthStatsCSVFile.close();
+
+    // Given the projection matrix of wideFov and the normal projection matrix, 
+    // we can pre-compute the corners of the normal view space in the wide fov space
+    glm::mat4 wideFovProjectionMatrix = remoteCameraWideFOV.getProjectionMatrix();
+    glm::mat4 normalProjectionMatrix = remoteCamera.getProjectionMatrix();
+    glm::vec3 corners[4] = {
+        glm::vec3(0, 0, 1.0),
+        glm::vec3(quadSet.getSize().x, 0, 1.0),
+        glm::vec3(0, quadSet.getSize().y, 1.0),
+        glm::vec3(quadSet.getSize().x, quadSet.getSize().y, 1.0),
+    };
+    for (int i = 0; i < 4; i++) {
+        corners[i] = glm::vec3(corners[i].x, corners[i].y, corners[i].z);
+        corners[i] = glm::unProject(
+            corners[i], 
+            normalProjectionMatrix, 
+            glm::mat4(1.0f), 
+            glm::vec4(0.0f, 0.0f, remoteRenderer.width, remoteRenderer.height));
+        normalViewCornersInWideFoVImage[i] = glm::project(
+            corners[i],
+            wideFovProjectionMatrix, 
+            glm::mat4(1.0f), 
+            glm::vec4(0.0f, 0.0f, remoteRenderer.width, remoteRenderer.height));
+    }
 }
 
 QUASARStreamer::~QUASARStreamer() {
@@ -307,7 +387,11 @@ void QUASARStreamer::setViewSphereDiameter(float viewSphereDiameter) {
     remoteRendererDP.setViewSphereDiameter(viewSphereDiameter);
 }
 
-RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNormals, bool showDepth) {
+RenderStats QUASARStreamer::generateFrame(
+    bool createResidualFrame,
+    bool showNormals,
+    bool showDepth,
+    const glm::mat4* wideFovGroundTruthView) {
     // Reset stats
     Stats prevStats = stats;
     stats = { 0 };
@@ -319,8 +403,14 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     int currMeshIndex  = meshIndex % 2;
     int prevMeshIndex  = (meshIndex + 1) % 2;
 
-    // Update wide FOV camera
-    remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
+    // Wide-FOV pose lag: ring buffer of remote views; pickIndex selects the lagged view when we refresh the snapshot.
+    wideFovCameraViewHistory.push_back(remoteCamera.getViewMatrix());
+    const size_t lag = static_cast<size_t>(wideFovPoseLagFrames);
+    const size_t maxHistory = lag + 1u;
+    while (wideFovCameraViewHistory.size() > maxHistory) {
+        wideFovCameraViewHistory.pop_front();
+    }
+    const size_t pickIndex = wideFovCameraViewHistory.size() > lag ? wideFovCameraViewHistory.size() - 1u - lag : 0u;
 
     auto quadsGenerator = frameGenerator.getQuadsGenerator();
 
@@ -334,12 +424,14 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
     stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
     
     frameID++;
+    spdlog::info("Frame ID: {}", frameID);
     // open file 
     quasarStatsCSVFile.open(quasarStatsCSVFileName, std::ios::app);
     quasarStatsCSVFile << frameID;
     quasarStatsCSVFile << "," << stats.totalRenderTimeMs;
     for (int layer = 0; layer < maxLayers; layer++) {
         int hiddenLayerIndex = layer - 1;
+        const bool isWideFovLayer = (layer == maxLayers - 1);
 
         auto& remoteCameraToUse = (layer == 0 && createResidualFrame)
                                     ? remoteCameraPrev
@@ -364,21 +456,189 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
         // Wide fov camera
         else {
             // Draw old center mesh at new remoteCamera layer, filling stencil buffer with 1
-            remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
-            // remoteRenderer.pipeline.writeMaskState.disableColorWrites();
-            wideFovNodes[currMeshIndex].visible = true;
-            wideFovNodes[prevMeshIndex].visible = false;
-            renderStats += remoteRenderer.drawObjectsNoLighting(sceneWideFov, remoteCameraToUse);
-            // remoteRendereer.outputRT.writeColorAsPNG("quasar_wide_fov_no_tone.png");
+            bool trimWideFov = false;
 
-            // Render remoteScene using stencil buffer as a mask
-            // At values where stencil buffer is not 1, remoteScene should render
-            remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
+            glm::mat4 prevProjectionMatrix = wideFovGroundTruthView != nullptr
+                ? remoteCamera.getProjectionMatrix()
+                : remoteCameraPrev.getProjectionMatrix();
+            // glm::mat4 prevViewMatrix = remoteCameraPrev.getViewMatrix();
+            glm::mat4 prevViewMatrix = wideFovGroundTruthView != nullptr
+                ? remoteCamera.getViewMatrix()
+                : remoteCameraPrev.getViewMatrix();
+
+            glm::mat4 currentProjectionMatrix = remoteCamera.getProjectionMatrix();
+            glm::mat4 currentViewMatrix = wideFovGroundTruthView != nullptr 
+                ? *wideFovGroundTruthView : 
+                remoteCamera.getViewMatrix();
+
+            // work reversely reproject the new pose into the old pose's wide fov space
+            glm::mat4 projectionMatrixWideFOV = remoteCameraWideFOV.getProjectionMatrix();
+            
+            spdlog::info("Current viewport size: ({}, {})", quadSet.getSize().x, quadSet.getSize().y);
+
+
+            glm::mat4 prevViewMatrixInverse = glm::inverse(prevViewMatrix);
+            glm::mat4 currentViewMatrixInverse = glm::inverse(currentViewMatrix);
+
+            spdlog::info("  Previous Position: ({:.3f}, {:.3f}, {:.3f})", prevViewMatrixInverse[3][0], prevViewMatrixInverse[3][1], prevViewMatrixInverse[3][2]);
+            spdlog::info("  Current Position: ({:.3f}, {:.3f}, {:.3f})", currentViewMatrixInverse[3][0], currentViewMatrixInverse[3][1], currentViewMatrixInverse[3][2]);
+            
+            glm::vec3 corners[4] = {
+                glm::vec3(0, 0, 1.0),
+                glm::vec3(quadSet.getSize().x, 0, 1.0),
+                glm::vec3(0, quadSet.getSize().y, 1.0),
+                glm::vec3(quadSet.getSize().x, quadSet.getSize().y, 1.0),
+            };
+            glm::vec3 newCorners[4];
+            for (int i = 0; i < 4; i++) {
+                glm::vec3 worldCorner = glm::unProject(
+                    corners[i], 
+                    prevViewMatrix, 
+                    prevProjectionMatrix, 
+                    glm::vec4(0, 0, quadSet.getSize().x, quadSet.getSize().y));
+                newCorners[i] = glm::project(
+                    worldCorner, 
+                    currentViewMatrix, 
+                    currentProjectionMatrix, 
+                    glm::vec4(0, 0, quadSet.getSize().x, quadSet.getSize().y));
+                
+                newCorners[i].x = std::max(newCorners[i].x, 0.0f);
+                newCorners[i].x = std::min(newCorners[i].x, float(quadSet.getSize().x));
+        
+                newCorners[i].y = std::max(newCorners[i].y, 0.0f);
+                newCorners[i].y = std::min(newCorners[i].y, float(quadSet.getSize().y));
+            }
+
+
+            remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
+        
+            // if (totalBlackArea > 10000.0f) {
+            if (trimWideFov) {
+            const glm::vec2 viewportSize(remoteRenderer.width, remoteRenderer.height);
+            // remoteRenderer.gBuffer.unbind();
+        
+            // Pass 1: Render the uncovered area in the wideFov Image
+            // By doing the reprojection from the normal view to the wide fov image using projection matrix
+            // The rectangular area is distorted, some pixels are overflowed into wide fov region, 
+            // resulting in "uncovered" areas in the normal view
+            
+            // get the region of the union of reprojected corners and normal view corners
+            glm::vec3 reprojectedCornersInWideFoVImage[4];
+            for (int i = 0; i < 4; i++) {
+                glm::vec3 worldCorner = glm::unProject(
+                    corners[i], 
+                    currentViewMatrix, 
+                    currentProjectionMatrix, 
+                    glm::vec4(0, 0, quadSet.getSize().x, quadSet.getSize().y));
+
+                glm::vec3 cornerInSourceWideFoVImage = glm::project(
+                    worldCorner, 
+                    prevViewMatrix, 
+                    projectionMatrixWideFOV, 
+                    glm::vec4(0, 0, quadSet.getSize().x, quadSet.getSize().y));
+
+                // we compute the area of the corner in the wide fov image
+                reprojectedCornersInWideFoVImage[i] = cornerInSourceWideFoVImage;
+
+            }
+            
+            glm::vec3 maskCorners[4];
+            maskCorners[0] = glm::vec3(std::min(normalViewCornersInWideFoVImage[0].x, reprojectedCornersInWideFoVImage[0].x),
+                                       std::min(normalViewCornersInWideFoVImage[0].y, reprojectedCornersInWideFoVImage[0].y), 1.0f);
+            maskCorners[1] = glm::vec3(std::max(normalViewCornersInWideFoVImage[1].x, reprojectedCornersInWideFoVImage[1].x),
+                                       std::min(normalViewCornersInWideFoVImage[1].y, reprojectedCornersInWideFoVImage[1].y), 1.0f);
+            maskCorners[2] = glm::vec3(std::min(normalViewCornersInWideFoVImage[2].x, reprojectedCornersInWideFoVImage[2].x),
+                                       std::max(normalViewCornersInWideFoVImage[2].y, reprojectedCornersInWideFoVImage[2].y), 1.0f);
+            maskCorners[3] = glm::vec3(std::max(normalViewCornersInWideFoVImage[3].x, reprojectedCornersInWideFoVImage[3].x),
+                                       std::max(normalViewCornersInWideFoVImage[3].y, reprojectedCornersInWideFoVImage[3].y), 1.0f);
+        
+            // TODO: Check whether we need any heuristic way to expand the mask region
+            // double the distance of the mask corners
+            // compute the vector from the mask corners to the normal view corners
+            // we compute from mask corner to the normal view corner, and then double the distance
+            glm::vec3 maskCornersExpanded[4];
+            for (int i = 0; i < 4; i++) {
+                glm::vec3 vector = maskCorners[i] - normalViewCornersInWideFoVImage[i];
+                maskCornersExpanded[i] = maskCorners[i] + 5.0f * vector;
+            }
+        
+            remoteRenderer.gBuffer.bind();
+            // remoteRenderer.outputRT.bind();
+            remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
+            remoteRenderer.pipeline.writeMaskState.disableColorWrites();
+            // remoteRenderer.pipeline.writeMaskState.enableColorWrites();
+            // We use the existing rect region as the mask: Those are covered, no need to draw
+            // remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
+            remoteRenderer.pipeline.apply();
+            glClearStencil(0);
+            glClear(GL_STENCIL_BUFFER_BIT);
+            quadMaskShader.bind();
+            quadMaskShader.setVec4("uDebugColor", glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
+            quadMaskShader.setVec2("uViewport", viewportSize);
+            quadMaskShader.setVec2("uCorners[0]", maskCornersExpanded[0]);
+            quadMaskShader.setVec2("uCorners[1]", maskCornersExpanded[1]);
+            quadMaskShader.setVec2("uCorners[2]", maskCornersExpanded[2]);
+            quadMaskShader.setVec2("uCorners[3]", maskCornersExpanded[3]);
+            quadMaskQuad.draw();
+            // remoteRenderer.outputRT.unbind();
+            remoteRenderer.gBuffer.unbind();
+        
+            // Pass 1: render the normal view scene range into the gbuffer
+            // those are the parts that are visible in the normal view, so no need to draw them in the wideFov
+            // use it as a stencil mask to avoid drawing them again
+        
+            remoteRenderer.gBuffer.bind();
+            // remoteRenderer.outputRT.bind();
+            remoteRenderer.pipeline.stencilState.stencilRef = 0;
+            remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_ZERO, GL_KEEP, GL_REPLACE);
+            remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 0);
+            remoteRenderer.pipeline.stencilState.writeStencilMask = 0xFF;
+            remoteRenderer.pipeline.writeMaskState.disableColorWrites();
+            remoteRenderer.pipeline.apply();
+            
+            quadMaskShader.bind();
+            quadMaskShader.setVec4("uDebugColor", glm::vec4(0.0f, 1.0f, 0.0f, 1.0f));
+            quadMaskShader.setVec2("uViewport", viewportSize);
+            quadMaskShader.setVec2("uCorners[0]", normalViewCornersInWideFoVImage[0]);
+            quadMaskShader.setVec2("uCorners[1]", normalViewCornersInWideFoVImage[1]);
+            quadMaskShader.setVec2("uCorners[2]", normalViewCornersInWideFoVImage[2]);
+            quadMaskShader.setVec2("uCorners[3]", normalViewCornersInWideFoVImage[3]);
+            quadMaskQuad.draw();
+            // remoteRenderer.outputRT.unbind();
+            // log out the mask image
+            // remoteRenderer.outputRT.writeColorAsPNG("debug_mask_" + std::to_string(frameID) + ".png");
+            remoteRenderer.gBuffer.unbind();
+        
+            // use the previous generated stencil buffer to draw only the uncovered area
+            remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_EQUAL, 1);
+            } else {
+            
+                remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
+                // remoteRenderer.pipeline.writeMaskState.disableColorWrites();
+                wideFovNodes[currMeshIndex].visible = true;
+                wideFovNodes[prevMeshIndex].visible = false;
+                renderStats += remoteRenderer.drawObjectsNoLighting(sceneWideFov, remoteCameraToUse);
+                // remoteRendereer.outputRT.writeColorAsPNG("quasar_wide_fov_no_tone.png");
+
+                // Render remoteScene using stencil buffer as a mask
+                // At values where stencil buffer is not 1, remoteScene should render
+                remoteRenderer.pipeline.stencilState.enableRenderingUsingStencilBufferAsMask(GL_NOTEQUAL, 1);
+            }
+            
             remoteRenderer.pipeline.writeMaskState.enableColorWrites();
             renderStats += remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCameraToUse, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             remoteRenderer.pipeline.stencilState.restoreStencilState();
             remoteRenderer.copyToFrameRT(renderTargetToUse);
+
+            // log out the rendered wide fov image to the dump directory
+            if (!wideFovImageDumpDir.empty()) {
+                Path dumpDir(wideFovImageDumpDir);
+                dumpDir.mkdirRecursive();
+                Path pngPath = dumpDir / ("widefov_" + std::to_string(frameID) + ".png");
+                renderTargetToUse.writeColorAsPNG(pngPath.str());
+            }
+
         }
         stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 
@@ -534,7 +794,9 @@ RenderStats QUASARStreamer::generateFrame(bool createResidualFrame, bool showNor
                           residualFrame.getTotalNumDepthOffsetsRevealed(), residualFrame.getTotalDepthOffsetsRevealedSize() / BYTES_PER_MEGABYTE);
         }
     }
-
+     
+    remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());
+    remoteCameraPrev.setViewMatrix(remoteCamera.getViewMatrix());
     for (int layer = 0; layer < maxLayers; layer++) {
         quasarStatsCSVFile << "," << stats.createProxiesTimeMsByLayer[layer];
         quasarStatsCSVFile << "," << stats.compressTimeMsByLayer[layer];

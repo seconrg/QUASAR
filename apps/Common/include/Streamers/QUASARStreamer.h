@@ -1,6 +1,9 @@
 #ifndef QUASAR_SIMULATOR_H
 #define QUASAR_SIMULATOR_H
 
+#include <deque>
+#include <memory>
+
 #include <CameraPose.h>
 #include <DepthMesh.h>
 #include <Quads/FrameGenerator.h>
@@ -12,6 +15,11 @@
 #include <PostProcessing/Tonemapper.h>
 #include <PostProcessing/ShowNormalsEffect.h>
 #include <Codecs/AlphaCodec.h>
+#include <Primitives/FullScreenQuad.h>
+#include <Primitives/Node.h>
+#include <Quads/QuadTexelUsageMaterial.h>
+#include <Scene.h>
+#include <Shaders/Shader.h>
 
 namespace quasar {
 
@@ -19,16 +27,24 @@ struct QUASARStreamerCreateParams {
     uint maxLayers = 5;
     float viewSphereDiameter = 1.0f;
     float wideFOV = 140.0f;
+    /// Wide-FOV layer (layer == maxLayers - 1) uses the camera view from this many frames ago (0 = latest).
+    uint wideFovPoseLagFrames = 0;
+    /// Refresh wide-FOV **camera pose** when frameID % wideFovUpdatePeriodFrames == 0; other frames reuse the last snapshot (render still runs every frame). Use 1 to refresh every frame.
+    uint wideFovUpdatePeriodFrames = 1;
     uint targetFramerate = 5;
     uint targetBitRate = 28;
     std::string videoURL = "";
     std::string proxiesURL = "";
+    /// If non-empty, write wide-FOV tonemapped color PNGs to this folder each frame (`widefov_<frameID>.png`).
+    std::string wideFovImageDumpDir;
 };
 
 class QUASARStreamer : public DataStreamerTCP {
 public:
     uint maxLayers;
     float viewSphereDiameter;
+    uint wideFovPoseLagFrames;
+    uint wideFovUpdatePeriodFrames;
 
     // Reference frame
     FrameRenderTarget referenceFrameRT;
@@ -68,6 +84,7 @@ public:
 
     std::string videoURL;
     std::string proxiesURL;
+    std::string wideFovImageDumpDir;
 
     struct Stats {
         double totalRenderTimeMs = 0.0;
@@ -86,6 +103,8 @@ public:
         std::vector<double> compressTimeMsByLayer;
         std::vector<double> createMeshTimeMsByLayer;
         QuadSet::Sizes proxySizes;
+        /// Shoelace area of the reprojected narrow-view quad in wide-FOV pixels^2 (last wide-FOV frame; debug).
+        double wideFovNarrowReprojectionQuadAreaPx = 0.0;
     } stats;
 
     struct bandwidthStats {
@@ -121,7 +140,13 @@ public:
     void addMeshesToScene(Scene& localScene);
     void setViewSphereDiameter(float viewSphereDiameter);
 
-    RenderStats generateFrame(bool createResidualFrame = false, bool showNormals = false, bool showDepth = false);
+    /// \param wideFovGroundTruthView If non-null, wide-FOV reprojection uses this as the current view (e.g. true client pose) instead of \p remoteCamera.
+    /// \param wideFovPrevNarrowProjFromRemoteCamera If true, the previous-frame unproject uses \p remoteCamera's projection; otherwise \p remoteCameraPrev (typical).
+    RenderStats generateFrame(
+        bool createResidualFrame = false,
+        bool showNormals = false,
+        bool showDepth = false,
+        const glm::mat4* wideFovGroundTruthView = nullptr);
     void sendFrame(PoseReceiver::PoseInfo poseInfo, bool createResidualFrame);
 
     void setDrawState(QuadMesh::DrawState drawState);
@@ -129,6 +154,10 @@ public:
     void writeTexturesToFiles(const Path& outputPath);
     size_t writeToFiles(const Path& outputPath);
     size_t writeToMemory(PoseReceiver::PoseInfo poseInfo, bool writeResidualFrame, std::vector<char>& outputData);
+
+    /// Non-null when there is a wide-FOV hidden layer; material used for local quad proxies + texel-usage tracking.
+    QuadTexelUsageMaterial* getWideFovQuadTexelUsageMaterial() { return wideFovQuadTexelUsageMaterial.get(); }
+    const QuadTexelUsageMaterial* getWideFovQuadTexelUsageMaterial() const { return wideFovQuadTexelUsageMaterial.get(); }
 
 private:
     const std::vector<glm::vec4> colors = {
@@ -153,6 +182,9 @@ private:
     PerspectiveCamera& remoteCamera;
     PerspectiveCamera remoteCameraPrev;
     PerspectiveCamera remoteCameraWideFOV;
+
+    std::deque<glm::mat4> wideFovCameraViewHistory;
+    glm::mat4 wideFovReuseViewMatrix{1.0f};
 
     // Wide fov
     std::vector<Node> wideFovNodes;
@@ -179,6 +211,18 @@ private:
 
     Tonemapper tonemapper;
     ShowNormalsEffect showNormalsEffect;
+
+    Shader quadMaskShader;
+    FullScreenQuad quadMaskQuad;
+    FrameRenderTarget debugMaskRT;
+
+    glm::vec3 normalViewCornersInWideFoVImage[4];
+
+    /// Wide-FOV hidden-layer quad proxies: QuadTexelUsageMaterial (quad layout; same usage image semantics as TexelUsageMaterial).
+    std::unique_ptr<QuadTexelUsageMaterial> wideFovQuadTexelUsageMaterial;
+
+    void computeReprojectedNarrowCornersInWideFov(glm::vec3 outCorners[4]) const;
+    void drawNarrowFovReprojectionOverlayOnWideRt(FrameRenderTarget& rt, const glm::vec3 cornersInWidePx[4]) const;
 };
 
 } // namespace quasar

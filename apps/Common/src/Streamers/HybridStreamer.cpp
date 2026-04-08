@@ -25,6 +25,7 @@ HybridStreamer::HybridStreamer(
     , depthURL(params.depthURL)
     , videoWideFovURL(params.videoWideFovURL)
     , depthWideFovURL(params.depthWideFovURL)
+    , wideFovImageDumpDir(params.wideFovImageDumpDir)
     , hiddenLayers(params.hiddenLayers)
     , remoteRendererDP(remoteRendererDP)
     , remoteRenderer(remoteRenderer)
@@ -622,6 +623,8 @@ RenderStats HybridStreamer::generateFrame() {
         glm::vec3(0, quadSet.getSize().y, 1.0),
         glm::vec3(quadSet.getSize().x, quadSet.getSize().y, 1.0),
     };
+
+    // newCorners stores the information of the new corners in the current view space
     glm::vec3 newCorners[4];
     for (int i = 0; i < 4; i++) {
         glm::vec3 worldCorner = glm::unProject(
@@ -676,15 +679,15 @@ RenderStats HybridStreamer::generateFrame() {
     // work reversely reproject the new pose into the old pose's wide fov space
     glm::mat4 projectionMatrixWideFOV = remoteCameraWideFOV.getProjectionMatrix();
 
-    spdlog::info(" prevProjectionMatrix: ");
-    for (int i = 0; i < 4; i++) {
-        spdlog::info("({}, {}, {}, {})", 
-            prevProjectionMatrix[i][0], 
-            prevProjectionMatrix[i][1], 
-            prevProjectionMatrix[i][2], 
-            prevProjectionMatrix[i][3]);
+    // spdlog::info(" prevProjectionMatrix: ");
+    // for (int i = 0; i < 4; i++) {
+    //     spdlog::info("({}, {}, {}, {})", 
+    //         prevProjectionMatrix[i][0], 
+    //         prevProjectionMatrix[i][1], 
+    //         prevProjectionMatrix[i][2], 
+    //         prevProjectionMatrix[i][3]);
         
-    }
+    // }
     
     glm::vec3 reprojectedCornersInWideFoVImage[4];
     for (int i = 0; i < 4; i++) {
@@ -712,11 +715,11 @@ RenderStats HybridStreamer::generateFrame() {
     bool trimWideFov = true;
 
     // render in full every 10 frames
-    if (frameID % 10 == 0) {
-        trimWideFov = false;
-    } else {
-        trimWideFov = true;
-    }
+    // if (frameID % 10 == 0) {
+    //     trimWideFov = false;
+    // } else {
+    //     trimWideFov = true;
+    // }
 
     // if (totalBlackArea > 10000.0f) {
     if (trimWideFov) {
@@ -727,7 +730,7 @@ RenderStats HybridStreamer::generateFrame() {
 
     // remoteRenderer.gBuffer.unbind();
 
-    // Pass 2: Render the uncovered area in the wideFov Image
+    // Pass 1: Render the uncovered area in the wideFov Image
     // By doing the reprojection from the normal view to the wide fov image using projection matrix
     // The rectangular area is distorted, some pixels are overflowed into wide fov region, 
     // resulting in "uncovered" areas in the normal view
@@ -775,7 +778,7 @@ RenderStats HybridStreamer::generateFrame() {
     remoteRenderer.gBuffer.unbind();
 
 
-    // Pass 1: render the normal view scene range into the gbuffer
+    // Pass 2: render the normal view scene range into the gbuffer
     // those are the parts that are visible in the normal view, so no need to draw them in the wideFov
     // use it as a stencil mask to avoid drawing them again
 
@@ -828,6 +831,14 @@ RenderStats HybridStreamer::generateFrame() {
     tonemapper.drawToRenderTarget(remoteRenderer, frameRTVisibleWideFov);
     tonemapper.enableTonemapping(true);
 
+    // dump the wide fov image to the dump directory
+    if (!wideFovImageDumpDir.empty()) {
+        Path dumpDir(wideFovImageDumpDir);
+        dumpDir.mkdirRecursive();
+        Path pngPath = dumpDir / ("widefov_" + std::to_string(frameID) + ".png");
+        frameRTVisibleWideFov.writeColorAsPNG(pngPath.str());
+    }
+
     // render into depthStreamerWideFOV
     tonemapper.drawToRenderTarget(remoteRenderer, visibleVideoStreamerWideFOV);
 
@@ -849,8 +860,6 @@ RenderStats HybridStreamer::generateFrame() {
     double wideFovMeshReconstructTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
     timeStats.totalRenderTimeMs += wideFovMeshReconstructTimeMs;
     timeStats.wideFovMeshGenFrameStats.createTimeMs = wideFovMeshReconstructTimeMs;
-
-    // depthStreamerWideFOV.writeColorAsPNG("debug_depth_widefov.png");
 
     // Update the previous camera pose
     remoteCameraPrev.setProjectionMatrix(remoteCamera.getProjectionMatrix());

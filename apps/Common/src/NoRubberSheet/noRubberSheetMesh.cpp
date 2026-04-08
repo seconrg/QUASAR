@@ -76,11 +76,11 @@ RenderStats NoRubberSheetMesh::draw(GLenum primitiveType, const Camera& camera, 
         }
     }
 
-    if (overrideMaterial != nullptr) {
-        spdlog::info("NoRubberSheetMesh::draw: Using override material");
-    }else {
-        spdlog::info("NoRubberSheetMesh::draw: Using default material");
-    }
+    // if (overrideMaterial != nullptr) {
+    //     spdlog::info("NoRubberSheetMesh::draw: Using override material");
+    // }else {
+    //     spdlog::info("NoRubberSheetMesh::draw: Using default material");
+    // }
 
     auto materialToUse = overrideMaterial != nullptr ? overrideMaterial : material;
     materialToUse->bind();

@@ -36,10 +36,18 @@ int main(int argc, char** argv) {
     args::ValueFlag<float> remoteFOVWideIn(parser, "remote-fov-wide", "Remote camera FOV in degrees for wide fov", {'W', "remote-fov-wide"}, 140.0f);
     args::ValueFlag<int> maxHiddenLayersIn(parser, "layers", "Max hidden layers", {'n', "max-hidden-layers"}, 3);
     args::ValueFlag<float> viewSphereDiameterIn(parser, "view-sphere-diameter", "Size of view sphere in m", {'B', "view-size"}, 0.5f);
+    args::ValueFlag<int> wideFovPoseLagFramesIn(parser, "wide-fov-pose-lag", "Wide-FOV layer renders with camera view from this many frames ago", {'L', "wide-fov-pose-lag"}, 0);
+    args::ValueFlag<int> wideFovUpdatePeriodIn(parser, "wide-fov-update-period", "Regenerate wide-FOV layer only when frameID mod N == 0 (1 = every frame)", {'K', "wide-fov-update-period"}, 1);
     args::ValueFlag<int> targetBitrateIn(parser, "target-bitrate", "Target bitrate (Mbps)", {'b', "target-bitrate"}, 28);
     args::ValueFlag<std::string> videoURLIn(parser, "video", "URL to send video", {'c', "video-url"}, "127.0.0.1:12345");
     args::ValueFlag<std::string> proxiesURLIn(parser, "proxies", "URL to send quad proxy metadata", {'e', "proxies-url"}, "127.0.0.1:65432");
     args::ValueFlag<std::string> poseURLIn(parser, "pose", "URL to send camera pose", {'p', "pose-url"}, "0.0.0.0:54321");
+    args::ValueFlag<std::string> wideFovDumpDirIn(parser, "path", "Dump wide-FOV tonemapped PNG per frame to this folder (empty = off)", {"wide-fov-dump-dir"}, "");
+    args::Flag showWideFovNarrowOverlayIn(
+        parser,
+        "show-wide-fov-narrow-overlay",
+        "Tint red the narrow-FOV footprint reprojected into the wide-FOV target (after tonemap)",
+        {"show-wide-fov-narrow-overlay"});
     try {
         parser.ParseCLI(argc, argv);
     } catch (args::Help) {
@@ -105,6 +113,10 @@ int main(int argc, char** argv) {
     QuadSet quadSet(remoteWindowSize);
     float remoteFOVWide = args::get(remoteFOVWideIn);
     float viewSphereDiameter = args::get(viewSphereDiameterIn);
+    int wideFovPoseLagArg = args::get(wideFovPoseLagFramesIn);
+    uint wideFovPoseLagFrames = static_cast<uint>(wideFovPoseLagArg < 0 ? 0 : wideFovPoseLagArg);
+    int wideFovUpdatePeriodArg = args::get(wideFovUpdatePeriodIn);
+    uint wideFovUpdatePeriodFrames = static_cast<uint>(wideFovUpdatePeriodArg < 1 ? 1 : wideFovUpdatePeriodArg);
     QUASARStreamer quasar(
         quadSet,
         remoteRendererDP, remoteRenderer, scene, camera,
@@ -112,9 +124,12 @@ int main(int argc, char** argv) {
             .maxLayers = maxLayers,
             .viewSphereDiameter = viewSphereDiameter,
             .wideFOV = remoteFOVWide,
+            .wideFovPoseLagFrames = wideFovPoseLagFrames,
+            .wideFovUpdatePeriodFrames = wideFovUpdatePeriodFrames,
             .targetBitRate = targetBitrate,
             .videoURL = videoURL,
             .proxiesURL = proxiesURL,
+            .wideFovImageDumpDir = args::get(wideFovDumpDirIn),
         });
 
     // "Local" scene for visualization

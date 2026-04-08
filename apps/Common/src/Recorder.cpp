@@ -112,6 +112,7 @@ void Recorder::captureFrame(const Camera& camera) {
     });
 
     frameCount++;
+    std::cout << "Do recording for frame: " << frameCount << std::endl;
 }
 
 void Recorder::saveFrames(int threadID) {

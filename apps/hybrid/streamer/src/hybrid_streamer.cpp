@@ -59,7 +59,9 @@ int main(int argc, char** argv) {
     args::ValueFlag<std::string> depthWideFovURLIn(parser, "depth-wide", "URL to recv wide fov depth", {"we", "depth-widefov-url"}, "127.0.0.1:65433");
     args::ValueFlag<std::string> proxiesURLIn(parser, "proxies", "URL to recv quad proxy metadata", {"px", "proxies-url"}, "127.0.0.1:65434");
     args::ValueFlag<std::string> poseURLIn(parser, "pose", "URL to recv camera pose", {"po", "pose-url"}, "0.0.0.0:54321");
-    
+    args::ValueFlag<std::string> wideFovDumpDirIn(
+        parser, "path", "Dump wide-FOV tonemapped PNG per frame (empty = off)", {"wide-fov-dump-dir"}, "");
+
     // Parse Config
     try {
         parser.ParseCLI(argc, argv);
@@ -152,6 +154,7 @@ int main(int argc, char** argv) {
             .depthURL = depthURL,
             .videoWideFovURL = videoWideFovURL,
             .depthWideFovURL = depthWideFovURL,
+            .wideFovImageDumpDir = args::get(wideFovDumpDirIn),
         }
     );
 

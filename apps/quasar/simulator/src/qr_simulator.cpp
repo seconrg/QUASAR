@@ -26,7 +26,11 @@
 #include <Streamers/QUASARStreamer.h>
 #include <HoleFiller.h>
 
+#include <Path.h>
 #include <PoseSendRecvSimulator.h>
+
+#include <glad/glad.h>
+#include <memory>
 
 using namespace quasar;
 
@@ -54,6 +58,27 @@ int main(int argc, char** argv) {
     args::ValueFlag<float> remoteFOVWideIn(parser, "remote-fov-wide", "Remote camera FOV in degrees for wide fov", {'W', "remote-fov-wide"}, 140.0f);
     args::ValueFlag<int> maxHiddenLayersIn(parser, "layers", "Max hidden layers", {'n', "max-hidden-layers"}, 3);
     args::ValueFlag<float> viewSphereDiameterIn(parser, "view-sphere-diameter", "Size of view sphere in m", {'B', "view-size"}, 0.5f);
+    args::ValueFlag<int> wideFovPoseLagFramesIn(parser, "wide-fov-pose-lag", "Wide-FOV layer renders with camera view from this many frames ago", {'L', "wide-fov-pose-lag"}, 0);
+    args::ValueFlag<int> wideFovUpdatePeriodIn(parser, "wide-fov-update-period", "Regenerate wide-FOV layer only when frameID mod N == 0 (1 = every frame)", {'K', "wide-fov-update-period"}, 1);
+    args::ValueFlag<std::string> wideFovDumpDirIn(parser, "path", "Dump wide-FOV tonemapped PNG per frame to this folder (empty = off)", {"wide-fov-dump-dir"}, "");
+    args::ValueFlag<std::string> wideFovClientColorTextureDumpDirIn(
+        parser,
+        "path",
+        "After each local drawObjects, dump wide-FOV layer colorTexture as PNG here (empty = off)",
+        {"dump-wide-fov-color-texture-after-draw"},
+        "");
+    args::ValueFlag<std::string> wideFovClientTexelUsageDumpDirIn(
+        parser,
+        "path",
+        "Dump wide-FOV texel-usage PNG only when generateFrame runs (same frame's local draw); "
+        "filename widefov_texel_usage_<frameID>.png for frameID 1–100 (empty = off)",
+        {"dump-wide-fov-texel-usage-after-draw"},
+        "");
+    args::Flag showWideFovNarrowOverlayIn(
+        parser,
+        "show-wide-fov-narrow-overlay",
+        "Tint red the narrow-FOV footprint reprojected into the wide-FOV target (after tonemap)",
+        {"show-wide-fov-narrow-overlay"});
     // args::ValueFlag<std::string> EIn(parser, "E", "Path to E's size for each depth peeling call", {'E', "E-path"}, "");
     
     try {
@@ -161,6 +186,26 @@ int main(int argc, char** argv) {
     QuadSet quadSet(remoteWindowSize);
     float remoteFOVWide = args::get(remoteFOVWideIn);
     float viewSphereDiameter = args::get(viewSphereDiameterIn);
+    int wideFovPoseLagArg = args::get(wideFovPoseLagFramesIn);
+    uint wideFovPoseLagFrames = static_cast<uint>(wideFovPoseLagArg < 0 ? 0 : wideFovPoseLagArg);
+
+
+    spdlog::info("Remote FOV Wide: {}", remoteFOVWide);
+
+    // hardcode wide fov pose lag frames to 1
+    wideFovPoseLagFrames = 0;
+
+    int wideFovUpdatePeriodArg = args::get(wideFovUpdatePeriodIn);
+    uint wideFovUpdatePeriodFrames = static_cast<uint>(wideFovUpdatePeriodArg < 1 ? 1 : wideFovUpdatePeriodArg);
+
+    wideFovUpdatePeriodFrames = 5;
+
+    //
+    std::string wideFovDumpDir = args::get(wideFovDumpDirIn);
+    if (wideFovDumpDir.empty()) {
+        wideFovDumpDir = outputPath.str() + "/widefov_dump";
+    }
+
     QUASARStreamer quasar(
         quadSet,
         remoteRendererDP, remoteRenderer, remoteScene, remoteCamera,
@@ -168,6 +213,9 @@ int main(int argc, char** argv) {
             .maxLayers = static_cast<uint>(maxLayers),
             .viewSphereDiameter = viewSphereDiameter,
             .wideFOV = remoteFOVWide,
+            .wideFovPoseLagFrames = wideFovPoseLagFrames,
+            .wideFovUpdatePeriodFrames = wideFovUpdatePeriodFrames,
+            .wideFovImageDumpDir = wideFovDumpDir,
         });
 
     quasar.addMeshesToScene(localScene);
@@ -227,8 +275,8 @@ int main(int argc, char** argv) {
     bool sendResidualFrame = false;
     int refFrameInterval = 5;
 
-    const double serverFPSValues[] = {0, 1, 5, 10, 15, 30};
-    const char* serverFPSLabels[] = {"0 FPS", "1 FPS", "5 FPS", "10 FPS", "15 FPS", "30 FPS"};
+    const double serverFPSValues[] = {0, 1, 5, 10, 15, 60};
+    const char* serverFPSLabels[] = {"0 FPS", "1 FPS", "5 FPS", "10 FPS", "15 FPS", "60 FPS"};
     int serverFPSIndex = !cameraPathFileIn ? 0 : 5; // default to 30 FPS
     double rerenderIntervalMs = serverFPSIndex == 0 ? 0.0 : MILLISECONDS_IN_SECOND / serverFPSValues[serverFPSIndex];
     float networkLatency = !cameraPathFileIn ? 0.0f : args::get(networkLatencyIn);
@@ -263,6 +311,14 @@ int main(int argc, char** argv) {
     TexturePreviewWindow refFramePreviewWindow("Reference Frame", quasar.referenceFrameRT.colorTexture, ImVec2(430, 270));
     TexturePreviewWindow resFrameChangedPreviewWindow("Residual Frame (changed geometry)", quasar.residualFrameMaskRT.colorTexture, ImVec2(430, 270));
     TexturePreviewWindow resFrameFullPreviewWindow("Residual Frame (revealed geometry)", quasar.residualFrameRT.colorTexture, ImVec2(430, 270));
+    std::unique_ptr<TexturePreviewWindow> wideFovTexelUsagePreview;
+    if (quasar.getWideFovQuadTexelUsageMaterial() != nullptr) {
+        wideFovTexelUsagePreview = std::make_unique<TexturePreviewWindow>(
+            "Wide FOV texel usage",
+            *quasar.getWideFovQuadTexelUsageMaterial()->getTexelUsageTexture(),
+            ImVec2(430, 270));
+        wideFovTexelUsagePreview->visible = true;
+    }
     SceneWindow sceneWindowRemote(remoteScene, ImVec2(430, 800));
     SceneWindow sceneWindowLocal(localScene, ImVec2(430, 800));
     CameraHeader cameraHeader(camera);
@@ -290,6 +346,9 @@ int main(int argc, char** argv) {
             ImGui::MenuItem("Layer Previews", 0, &showLayerPreviews);
             ImGui::MenuItem("Video Preview", 0, &videoPreviewWindow.visible);
             ImGui::MenuItem("Alpha Preview", 0, &alphaPreviewWindow.visible);
+            if (wideFovTexelUsagePreview) {
+                ImGui::MenuItem("Wide FOV texel usage", 0, &wideFovTexelUsagePreview->visible);
+            }
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Scene")) {
@@ -306,6 +365,9 @@ int main(int argc, char** argv) {
         sceneWindowLocal.draw(now, dt);
         videoPreviewWindow.draw(now, dt);
         alphaPreviewWindow.draw(now, dt);
+        if (wideFovTexelUsagePreview) {
+            wideFovTexelUsagePreview->draw(now, dt);
+        }
 
         if (showUI) {
             ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
@@ -512,8 +574,16 @@ int main(int argc, char** argv) {
     bool updateClient = !saveImages;
     int frameCounter = 0;
 
+    std::string wideFovClientColorTextureDumpDir = args::get(wideFovClientColorTextureDumpDirIn);
+    uint64_t clientColorTextureDumpSeq = 0;
+    std::string wideFovClientTexelUsageDumpDir = args::get(wideFovClientTexelUsageDumpDirIn);
+    if (wideFovClientTexelUsageDumpDir.empty()) {
+        wideFovClientTexelUsageDumpDir = outputPath.str() + "/widefov_texel_usage";
+    }
+
     bool dumpCameraPoses = false;
     app.onRender([&](double now, double dt) {
+        bool dumpWideFovTexelUsageAfterGenerateFrame = false;
         // Handle mouse input
         if (!(ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantCaptureMouse)) {
             auto mouseButtons = window->getMouseButtons();
@@ -589,7 +659,9 @@ int main(int argc, char** argv) {
         //  // write back onto disk
         // recorder.captureFrame(camera);
         // recorder.saveFrames(0);
+        bool renderState = sendReferenceFrame || sendResidualFrame;
         if (sendReferenceFrame || sendResidualFrame) {
+            spdlog::info("Do frame generation for frame: {}", frameCounter);
             // Update all animations
             if (runAnimations) {
                 remoteScene.updateAnimations(totalDT);
@@ -598,6 +670,7 @@ int main(int argc, char** argv) {
             lastRenderTime = now;
 
             // "Send" pose to the server. this will wait until latency+/-jitter ms have passed
+            spdlog::info("Send pose to server: {}, {}, {}", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
             poseSendRecvSimulator.sendPose(camera, now);
             if (!preventCopyingLocalPose) {
                 // "Receive" a predicted pose to render a new frame. this will wait until latency+/-jitter ms have passed
@@ -606,6 +679,7 @@ int main(int argc, char** argv) {
                     remoteCamera.setViewMatrix(clientPosePred.mono.view);
 
                 }
+                spdlog::info("Remote Render with pose: {}, {}, {}", remoteCamera.getPosition().x, remoteCamera.getPosition().y, remoteCamera.getPosition().z);
                 // If we do not have a new pose, just send a new frame with the old pose
             }
 
@@ -625,8 +699,13 @@ int main(int argc, char** argv) {
             //     spdlog::info("Set View Sphere Diameter to {}", E);
             // }
 
+            // quasar.generateFrame(sendResidualFrame, showNormals, showDepth, &camera.getViewMatrix());
             quasar.generateFrame(sendResidualFrame, showNormals, showDepth);
             quasar.sendFrame(PoseReceiver::PoseInfo{0, 0, 0}, sendResidualFrame);
+
+            if (!wideFovClientTexelUsageDumpDir.empty() && quasar.getWideFovQuadTexelUsageMaterial() != nullptr) {
+                dumpWideFovTexelUsageAfterGenerateFrame = true;
+            }
 
             std::string frameType = sendReferenceFrame ? "Reference Frame" : "Residual Frame";
             spdlog::info("======================================================");
@@ -690,7 +769,51 @@ int main(int argc, char** argv) {
 
         // Render generated meshes
         // quasar.setDrawState(QuadMesh::DrawState::OPAQUE); // draw opaque quads first
+        // if (QuadTexelUsageMaterial* wideFovTexelMat = quasar.getWideFovQuadTexelUsageMaterial()) {
+        //     wideFovTexelMat->clearTexelUsageMap();
+        // }
         renderStats = renderer.drawObjects(localScene, camera);
+        // if (QuadTexelUsageMaterial* wideFovTexelMat = quasar.getWideFovQuadTexelUsageMaterial()) {
+
+
+        
+        //     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        //     if (dumpWideFovTexelUsageAfterGenerateFrame && !wideFovClientTexelUsageDumpDir.empty()) {
+        //         glFinish();
+
+        //         spdlog::info("Render with pose: {}, {}, {}", 
+        //                         camera.getPosition().x, 
+        //                         camera.getPosition().y, 
+        //                         camera.getPosition().z);
+
+        //         Path dumpDir(wideFovClientTexelUsageDumpDir);
+        //         dumpDir.mkdirRecursive();
+        //         Path pngPath = dumpDir / ("widefov_texel_usage_" + std::to_string(quasar.frameID) + ".png");
+        //         wideFovTexelMat->getTexelUsageTexture()->writeToPNG(pngPath.str());
+        //     }
+        // }
+        // if (!wideFovClientColorTextureDumpDir.empty() && !quasar.frameRTsHidLayer.empty()) {
+        //     // add outputPath to the dumpDir
+        //     Path dumpDir(wideFovClientColorTextureDumpDir);
+        //     dumpDir.mkdirRecursive();
+        //     Path pngPath = dumpDir / ("widefov_colorTexture_" + std::to_string(clientColorTextureDumpSeq++) + ".png");
+        //     quasar.frameRTsHidLayer.back().colorTexture.writeToPNG(pngPath.str());
+        // }
+        // if (renderState) {
+        //     spdlog::info("Do recording for frame: {}", frameCounter);
+        //     if (cameraPathFileIn) {
+        //         recorder.captureFrame(camera);
+
+        //         if (!cameraAnimator.running) {
+        //             poseSendRecvSimulator.printErrors();
+        //             recorder.stop();
+        //             window->close();
+        //         }
+        //     }
+        //     else if (recordWindow.isRecording()) {
+        //         recorder.captureFrame(camera);
+        //     }
+        // }
         // save the camera pose after rendering
         glm::vec3 predictedPos = camera.getPosition();
         glm::vec3 predictedRot = camera.getRotationEuler();
@@ -719,6 +842,11 @@ int main(int argc, char** argv) {
         poseSendRecvSimulator.accumulateError(camera, remoteCamera);
 
         if (cameraPathFileIn) {
+
+            spdlog::info("Render with pose: {}, {}, {}", 
+                            camera.getPosition().x, 
+                            camera.getPosition().y, 
+                            camera.getPosition().z);
             recorder.captureFrame(camera);
 
             if (!cameraAnimator.running) {

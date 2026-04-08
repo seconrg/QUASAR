@@ -1,6 +1,8 @@
 #include <Texture.h>
 #include <Utils/FileIO.h>
 
+#include <spdlog/spdlog.h>
+
 using namespace quasar;
 
 Texture::Texture() {
@@ -238,6 +240,33 @@ void Texture::resize(uint width, uint height) {
 }
 
 void Texture::readPixels(unsigned char* data, bool readAsFloat) {
+    // glReadPixels reads the read framebuffer, not the bound texture. Attach this texture to an FBO for readback.
+    if (!multiSampled && !array && target == GL_TEXTURE_2D && data != nullptr) {
+        GLint prevReadFbo = 0;
+        GLint prevReadBuffer = 0;
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevReadFbo);
+        glGetIntegerv(GL_READ_BUFFER, &prevReadBuffer);
+
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ID, 0);
+        const GLenum status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            spdlog::warn("Texture::readPixels: GL_READ_FRAMEBUFFER incomplete (status={} internalFormat={})", status, internalFormat);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevReadFbo));
+            glReadBuffer(static_cast<GLenum>(prevReadBuffer));
+            glDeleteFramebuffers(1, &fbo);
+            return;
+        }
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glReadPixels(0, 0, width, height, format, readAsFloat ? GL_FLOAT : GL_UNSIGNED_BYTE, data);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevReadFbo));
+        glReadBuffer(static_cast<GLenum>(prevReadBuffer));
+        glDeleteFramebuffers(1, &fbo);
+        return;
+    }
+
     bind(0);
     glReadPixels(0, 0, width, height, format, readAsFloat ? GL_FLOAT : GL_UNSIGNED_BYTE, data);
     unbind();
