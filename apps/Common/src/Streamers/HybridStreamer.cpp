@@ -571,7 +571,7 @@ RenderStats HybridStreamer::generateFrame() {
     timeStats.visibleMeshGenFrameStats.renderTimeMs = visibleMeshRenderTimeMs;
 
     // Compress depth map to BC4 format with ZSTD
-    size_t visibleMeshCompressedSize = depthStreamerRT.generateFrame();
+    depthStreamerRT.generateFrame();
     
     timeStats.visibleMeshGenFrameStats.compressTimeMs = depthStreamerRT.stats.compressTimeMs;
     timeStats.totalCompressTimeMs += timeStats.visibleMeshGenFrameStats.compressTimeMs;
@@ -849,7 +849,7 @@ RenderStats HybridStreamer::generateFrame() {
     timeStats.totalRenderTimeMs += wideFovMeshRenderTimeMs;
     timeStats.wideFovMeshGenFrameStats.renderTimeMs = wideFovMeshRenderTimeMs;
     
-    size_t wideFovMeshCompressedSize = depthStreamerWideFOV.generateFrame();
+    depthStreamerWideFOV.generateFrame();
 
     timeStats.wideFovMeshGenFrameStats.compressTimeMs = depthStreamerWideFOV.stats.compressTimeMs;
     timeStats.totalCompressTimeMs += timeStats.wideFovMeshGenFrameStats.compressTimeMs;

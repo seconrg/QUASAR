@@ -292,8 +292,6 @@ void HybridReceiver::updateMesh(bool isWideFOV, bool isBackupMesh) {
 
 
 void HybridReceiver::recvData(GLFWwindow* window) {
-
-    GLFWwindow* windowInUse = window;
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); // Invisible window
     GLFWwindow* workerContext = glfwCreateWindow(1920, 1080, "Worker", NULL, window);
     if (!workerContext) {
@@ -457,10 +455,8 @@ HybridReceiver::TimeStats HybridReceiver::reconstructHiddenLayers(std::shared_pt
         glFinish();
 
         // spdlog::info("    Appending quads for layer {} took {} ms", layer, timeutils::microsToMillis(timeutils::getTimeMicros() - startTime));
-        double tmpStartTime = timeutils::getTimeMicros();
         meshesInUse[layer].createMeshFromProxies(quadSet, gBufferSize, remoteCamera);
         glFinish();
-        // spdlog::info("    Creating mesh from proxies for layer {} took {} ms", layer, timeutils::microsToMillis(timeutils::getTimeMicros() - tmpStartTime));
 
         auto meshBufferSizes = meshesInUse[layer].getBufferSizes();
         stats.totalTriangles += meshBufferSizes.numIndices / 3;
@@ -494,11 +490,10 @@ QuadFrame::FrameType HybridReceiver::loadFromMemory(const std::vector<char>& inp
     double frameRecvTimestamp = timeutils::getTimeMicros();
 
     double timeElapse =timeutils::microsToMillis(frameRecvTimestamp - (frameSendTimestamp - poseRecvTimestamp) - poseSendTimestamp);
-    double end2endTime = timeutils::microsToMillis(frameRecvTimestamp - poseSendTimestamp);
     spdlog::info("Time elapse: {}", timeElapse);
     // write to file 
     // std::ofstream timeElapseFile("hybrid_time_elapse.csv", std::ios::app);
-    // timeElapseFile << timeElapse << "," << end2endTime << "," << frameRecvTimestamp << "," << poseSendTimestamp << "," << poseRecvTimestamp << "," << frameSendTimestamp << std::endl;
+    // timeElapseFile << timeElapse << "," << timeutils::microsToMillis(frameRecvTimestamp - poseSendTimestamp) << "," << frameRecvTimestamp << "," << poseSendTimestamp << "," << poseRecvTimestamp << "," << frameSendTimestamp << std::endl;
     // timeElapseFile.close();
 
     size_t expectedSize = header.getSize();

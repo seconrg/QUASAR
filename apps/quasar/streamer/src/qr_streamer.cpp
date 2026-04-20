@@ -48,6 +48,22 @@ int main(int argc, char** argv) {
         "show-wide-fov-narrow-overlay",
         "Tint red the narrow-FOV footprint reprojected into the wide-FOV target (after tonemap)",
         {"show-wide-fov-narrow-overlay"});
+    args::Flag trimWideFovIn(
+        parser,
+        "trim-wide-fov",
+        "Legacy shortcut for --wide-fov-mask-method stencil",
+        {"trim-wide-fov"});
+    args::ValueFlag<std::string> wideFovMaskMethodIn(
+        parser,
+        "method",
+        "Wide-FOV mask method: none, stencil, or recorded-texel-usage",
+        {"wide-fov-mask-method"},
+        "");
+    args::Flag useWideFovGroundTruthIn(
+        parser,
+        "use-wide-fov-ground-truth",
+        "Wide-FOV reprojection uses local (client) view as current pose instead of predicted remote pose",
+        {"use-wide-fov-ground-truth"});
     try {
         parser.ParseCLI(argc, argv);
     } catch (args::Help) {
@@ -117,6 +133,22 @@ int main(int argc, char** argv) {
     uint wideFovPoseLagFrames = static_cast<uint>(wideFovPoseLagArg < 0 ? 0 : wideFovPoseLagArg);
     int wideFovUpdatePeriodArg = args::get(wideFovUpdatePeriodIn);
     uint wideFovUpdatePeriodFrames = static_cast<uint>(wideFovUpdatePeriodArg < 1 ? 1 : wideFovUpdatePeriodArg);
+    WideFovMaskMethod wideFovMaskMethod = WideFovMaskMethod::None;
+    const std::string wideFovMaskMethodValue = args::get(wideFovMaskMethodIn);
+    if (!wideFovMaskMethodValue.empty()) {
+        if (!tryParseWideFovMaskMethod(wideFovMaskMethodValue, wideFovMaskMethod)) {
+            spdlog::error(
+                "Invalid wide-FOV mask method '{}'. Expected one of: none, stencil, recorded-texel-usage",
+                wideFovMaskMethodValue);
+            return 1;
+        }
+    }
+    else if (args::get(trimWideFovIn)) {
+        wideFovMaskMethod = WideFovMaskMethod::Stencil;
+    }
+    bool trimWideFov = wideFovMaskMethod == WideFovMaskMethod::Stencil;
+    bool useWideFovGroundTruth = args::get(useWideFovGroundTruthIn);
+    spdlog::info("Wide FOV Mask Method: {}", wideFovMaskMethodToString(wideFovMaskMethod));
     QUASARStreamer quasar(
         quadSet,
         remoteRendererDP, remoteRenderer, scene, camera,
@@ -130,6 +162,9 @@ int main(int argc, char** argv) {
             .videoURL = videoURL,
             .proxiesURL = proxiesURL,
             .wideFovImageDumpDir = args::get(wideFovDumpDirIn),
+            .wideFovMaskMethod = wideFovMaskMethod,
+            .trimWideFov = trimWideFov,
+            .useWideFovGroundTruth = useWideFovGroundTruth,
         });
 
     // "Local" scene for visualization
@@ -383,7 +418,11 @@ int main(int argc, char** argv) {
                 camera.setPosition(camera.getPosition());
                 camera.updateViewMatrix();
 
-                renderStats = quasar.generateFrame(sendResidualFrame, showNormals, showDepth);
+                renderStats = quasar.generateFrame(
+                    sendResidualFrame,
+                    showNormals,
+                    showDepth,
+                    useWideFovGroundTruth ? &camera.getViewMatrix() : nullptr);
 
                 // Restore camera position
                 camera.setPosition(camera.getPosition());

@@ -28,6 +28,7 @@ public:
     const glm::mat4& getProjectionMatrixInverse() const { return projInverse; }
     const glm::mat4& getViewMatrix() const { return view; }
     const glm::mat4& getViewMatrixInverse() const { return viewInverse; }
+    float getTimestamp() const { return timestamp; }
 
     void setFovyRadians(float fovyRad) override { this->fovyRad = fovyRad; updateProjectionMatrix(); }
     void setFovyDegrees(float fovyDeg) override { this->fovyRad = glm::radians(fovyDeg); updateProjectionMatrix(); }

@@ -180,8 +180,8 @@ int main(int argc, char** argv) {
 
     bool sendRemoteFrame = true;
 
-    const double serverFPSValues[] = {0, 1, 5, 10, 15, 30};
-    const char* serverFPSLabels[] = {"0 FPS", "1 FPS", "5 FPS", "10 FPS", "15 FPS", "30 FPS"};
+    const double serverFPSValues[] = {0, 1, 5, 10, 15, 60};
+    const char* serverFPSLabels[] = {"0 FPS", "1 FPS", "5 FPS", "10 FPS", "15 FPS", "60 FPS"};
     int serverFPSIndex = !cameraPathFileIn ? 0 : 5; // default to 30 FPS
     double rerenderIntervalMs = serverFPSIndex == 0 ? 0.0 : MILLISECONDS_IN_SECOND / serverFPSValues[serverFPSIndex];
     float networkLatency = !cameraPathFileIn ? 0.0f : args::get(networkLatencyIn);
@@ -421,6 +421,28 @@ int main(int argc, char** argv) {
             atwShader.setTexture("depthTexture", renderTarget.depthStencilTexture, 6);
         }
         renderStats = remoteRenderer.drawToRenderTarget(atwShader, renderer.frameRT);
+        {
+            const glm::vec3 cameraPos = camera.getPosition();
+            const glm::vec3 cameraRot = camera.getRotationEuler();
+            const glm::vec3 remoteCameraPos = remoteCamera.getPosition();
+            const glm::vec3 remoteCameraRot = remoteCamera.getRotationEuler();
+            spdlog::info(
+                "ATW camera pose: pos=({}, {}, {}), rot=({}, {}, {})",
+                cameraPos.x,
+                cameraPos.y,
+                cameraPos.z,
+                cameraRot.x,
+                cameraRot.y,
+                cameraRot.z);
+            spdlog::info(
+                "ATW remote camera pose: pos=({}, {}, {}), rot=({}, {}, {})",
+                remoteCameraPos.x,
+                remoteCameraPos.y,
+                remoteCameraPos.z,
+                remoteCameraRot.x,
+                remoteCameraRot.y,
+                remoteCameraRot.z);
+        }
 
         // write colorTexture Output for debugging   
         // clear the output texture
@@ -481,6 +503,16 @@ int main(int argc, char** argv) {
         poseSendRecvSimulator.accumulateError(camera, remoteCamera);
 
         if (cameraPathFileIn) {
+            glm::vec3 cameraPos = camera.getPosition();
+            glm::vec3 cameraRot = camera.getRotationEuler();
+            spdlog::info(
+                "Render with pose: pos=({}, {}, {}), rot=({}, {}, {})",
+                cameraPos.x,
+                cameraPos.y,
+                cameraPos.z,
+                cameraRot.x,
+                cameraRot.y,
+                cameraRot.z);
             recorder.captureFrame(camera);
 
             if (!cameraAnimator.running) {

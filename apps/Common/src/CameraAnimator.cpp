@@ -156,3 +156,22 @@ void CameraAnimator::copyPoseToCamera(PerspectiveCamera& camera) const {
     // update the camera's timestamp for the pose
     camera.setTimestamp(getCurrentTimestamp());
 }
+
+std::optional<CameraAnimator::CameraPose> CameraAnimator::getNextPose() const {
+    if (!running || waypoints.empty())
+        return std::nullopt;
+
+    const size_t nextIndex = currentIndex + 1;
+    if (nextIndex >= waypoints.size())
+        return std::nullopt;
+
+    return waypoints[nextIndex];
+}
+
+std::optional<CameraAnimator::CameraPose> CameraAnimator::getPoseAtIndex(size_t index) const {
+    if (index >= waypoints.size()) {
+        return std::nullopt;
+    }
+
+    return waypoints[index];
+}

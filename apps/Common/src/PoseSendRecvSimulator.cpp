@@ -108,6 +108,16 @@ bool PoseSendRecvSimulator::recvPoseToRender(Pose& pose, double now) {
     return true;
 }
 
+bool PoseSendRecvSimulator::predictPose(
+    Pose& predictedPose,
+    const Pose& latest,
+    const Pose& previous,
+    const Pose& secondPrevious,
+    double targetFutureTimeS)
+{
+    return getPosePredicted(predictedPose, latest, previous, secondPrevious, targetFutureTimeS);
+}
+
 void PoseSendRecvSimulator::accumulateError(const PerspectiveCamera& camera, const PerspectiveCamera& remoteCamera) {
     float positionDiff = glm::distance(camera.getPosition(), remoteCamera.getPosition());
     glm::quat q1 = glm::normalize(camera.getRotationQuat());
@@ -172,8 +182,10 @@ glm::quat PoseSendRecvSimulator::averageQuaternions(const std::deque<glm::quat>&
 }
 
 double PoseSendRecvSimulator::randomJitter() {
-    // return distribution(generator);
-    return 0.0;
+    if (networkJitterS <= 0.0) {
+        return 0.0;
+    }
+    return distribution(generator);
 }
 
 double PoseSendRecvSimulator::calculateMean(const std::vector<double>& errors) const {

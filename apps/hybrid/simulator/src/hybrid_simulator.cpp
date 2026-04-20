@@ -174,9 +174,9 @@ int main(int argc, char** argv) {
     float viewSphereDiameter = args::get(viewSphereDiameterIn);
 
     std::string wideFovDumpDir = args::get(wideFovDumpDirIn);
-    if (wideFovDumpDir.empty()) {
-        wideFovDumpDir = outputPath.str() + "/widefov_dump";
-    }
+    // if (wideFovDumpDir.empty()) {
+    //     wideFovDumpDir = outputPath.str() + "/widefov_dump";
+    // }
     
 
     HybridStreamer hybridStreamer(

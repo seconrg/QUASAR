@@ -6,7 +6,6 @@ using namespace quasar;
 NoRubberSheetMaterial::NoRubberSheetMaterial(const UnlitMaterialCreateParams& params)
     : UnlitMaterial(params)
 {
-    printf("NoRubberSheetMaterial::NoRubberSheetMaterial, %d\n", Material::AlphaMode::OPAQUE);
     // delete the previous shader (Override the previous shader)
     shader = nullptr;
     std::vector<std::string> defines = {

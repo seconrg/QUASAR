@@ -3,6 +3,7 @@
 
 #include <deque>
 #include <memory>
+#include <string_view>
 
 #include <CameraPose.h>
 #include <DepthMesh.h>
@@ -23,13 +24,49 @@
 
 namespace quasar {
 
+enum class WideFovMaskMethod {
+    None,
+    Stencil,
+    RecordedTexelUsage,
+};
+
+inline const char* wideFovMaskMethodToString(WideFovMaskMethod method) {
+    switch (method) {
+        case WideFovMaskMethod::None:
+            return "none";
+        case WideFovMaskMethod::Stencil:
+            return "stencil";
+        case WideFovMaskMethod::RecordedTexelUsage:
+            return "recorded-texel-usage";
+    }
+    return "none";
+}
+
+inline bool tryParseWideFovMaskMethod(std::string_view value, WideFovMaskMethod& outMethod) {
+    if (value == "none" || value == "off" || value == "disabled") {
+        outMethod = WideFovMaskMethod::None;
+        return true;
+    }
+    if (value == "stencil" || value == "trim" || value == "trim-stencil") {
+        outMethod = WideFovMaskMethod::Stencil;
+        return true;
+    }
+    if (value == "recorded-texel-usage" || value == "recorded_texel_usage"
+        || value == "texel-usage" || value == "mask-gt")
+    {
+        outMethod = WideFovMaskMethod::RecordedTexelUsage;
+        return true;
+    }
+    return false;
+}
+
 struct QUASARStreamerCreateParams {
     uint maxLayers = 5;
     float viewSphereDiameter = 1.0f;
     float wideFOV = 140.0f;
     /// Wide-FOV layer (layer == maxLayers - 1) uses the camera view from this many frames ago (0 = latest).
     uint wideFovPoseLagFrames = 0;
-    /// Refresh wide-FOV **camera pose** when frameID % wideFovUpdatePeriodFrames == 0; other frames reuse the last snapshot (render still runs every frame). Use 1 to refresh every frame.
+    /// Wide-FOV layer: full render, tonemap, and quad generation only when frameID % wideFovUpdatePeriodFrames == 0 (and once while the wide layer has no quads yet). Other frames reuse the last wide-FOV textures and proxies. Use 1 for every frame. If this is greater than 1, \p trimWideFov is forced off in the streamer ctor.
     uint wideFovUpdatePeriodFrames = 1;
     uint targetFramerate = 5;
     uint targetBitRate = 28;
@@ -37,6 +74,12 @@ struct QUASARStreamerCreateParams {
     std::string proxiesURL = "";
     /// If non-empty, write wide-FOV tonemapped color PNGs to this folder each frame (`widefov_<frameID>.png`).
     std::string wideFovImageDumpDir;
+    /// Selects how the wide-FOV layer should be masked: none, stencil trim, or recorded texel-usage masks.
+    WideFovMaskMethod wideFovMaskMethod = WideFovMaskMethod::None;
+    /// Legacy compatibility knob for stencil trim. Ignored when \p wideFovMaskMethod is explicitly set by the caller.
+    bool trimWideFov = false;
+    /// If true, \p generateFrame only honors \p wideFovGroundTruthView when it is non-null (client/true pose).
+    bool useWideFovGroundTruth = false;
 };
 
 class QUASARStreamer : public DataStreamerTCP {
@@ -45,6 +88,9 @@ public:
     float viewSphereDiameter;
     uint wideFovPoseLagFrames;
     uint wideFovUpdatePeriodFrames;
+    WideFovMaskMethod wideFovMaskMethod;
+    bool trimWideFov;
+    bool useWideFovGroundTruth;
 
     // Reference frame
     FrameRenderTarget referenceFrameRT;
@@ -140,8 +186,7 @@ public:
     void addMeshesToScene(Scene& localScene);
     void setViewSphereDiameter(float viewSphereDiameter);
 
-    /// \param wideFovGroundTruthView If non-null, wide-FOV reprojection uses this as the current view (e.g. true client pose) instead of \p remoteCamera.
-    /// \param wideFovPrevNarrowProjFromRemoteCamera If true, the previous-frame unproject uses \p remoteCamera's projection; otherwise \p remoteCameraPrev (typical).
+    /// \param wideFovGroundTruthView When \p useWideFovGroundTruth is true and this is non-null, wide-FOV reprojection uses it as the current view (e.g. client pose) instead of \p remoteCamera.
     RenderStats generateFrame(
         bool createResidualFrame = false,
         bool showNormals = false,
@@ -158,6 +203,10 @@ public:
     /// Non-null when there is a wide-FOV hidden layer; material used for local quad proxies + texel-usage tracking.
     QuadTexelUsageMaterial* getWideFovQuadTexelUsageMaterial() { return wideFovQuadTexelUsageMaterial.get(); }
     const QuadTexelUsageMaterial* getWideFovQuadTexelUsageMaterial() const { return wideFovQuadTexelUsageMaterial.get(); }
+    const FrameRenderTarget* getWideFovHiddenLayerNoToneRT() const {
+        return frameRTsHidLayer_noTone.empty() ? nullptr : &frameRTsHidLayer_noTone.back();
+    }
+    const glm::vec3* getNormalViewCornersInWideFovImage() const { return normalViewCornersInWideFoVImage; }
 
 private:
     const std::vector<glm::vec4> colors = {
@@ -213,6 +262,7 @@ private:
     ShowNormalsEffect showNormalsEffect;
 
     Shader quadMaskShader;
+    Shader atwDebugShader;
     FullScreenQuad quadMaskQuad;
     FrameRenderTarget debugMaskRT;
 

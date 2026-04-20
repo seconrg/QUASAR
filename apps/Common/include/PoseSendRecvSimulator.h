@@ -45,6 +45,12 @@ public:
     void sendPose(const PerspectiveCamera& camera, double now);
     void update(float now);
     bool recvPoseToRender(Pose& pose, double now);
+    bool predictPose(
+        Pose& predictedPose,
+        const Pose& latest,
+        const Pose& previous,
+        const Pose& secondPrevious,
+        double targetFutureTimeS);
 
     void accumulateError(const PerspectiveCamera& camera, const PerspectiveCamera& remoteCamera);
     ErrorStats getAvgErrors();

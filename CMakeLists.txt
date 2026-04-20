@@ -7,6 +7,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(QUASAR_BUILD_APPS "Build apps" ON)
+option(QUASAR_BUILD_UNIT_TESTS "Build standalone unit-test utilities" ON)
+
+set(QUASAR_WARNING_FLAGS -Wunused-variable)
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    list(APPEND QUASAR_WARNING_FLAGS -Wno-cast-calling-convention)
+endif()
 
 set(RENDERER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/renderer)
 set(RENDERER_SHADERS_DIR ${RENDERER_DIR}/shaders)
@@ -89,4 +95,8 @@ if (QUASAR_BUILD_APPS)
 
     # make symbolic link of shaders to output/apps directory
     file(CREATE_LINK ${RENDERER_SHADERS_DIR} ${CMAKE_CURRENT_BINARY_DIR}/apps/shaders SYMBOLIC)
+
+    if (QUASAR_BUILD_UNIT_TESTS)
+        add_subdirectory(unit_test)
+    endif()
 endif()
