@@ -1,6 +1,7 @@
 #ifndef ANIMATOR_H
 #define ANIMATOR_H
 
+#include <optional>
 #include <vector>
 #include <string>
 
@@ -31,6 +32,8 @@ public:
     bool update(double dt);
 
     void copyPoseToCamera(PerspectiveCamera& camera) const;
+    std::optional<CameraPose> getNextPose() const;
+    std::optional<CameraPose> getPoseAtIndex(size_t index) const;
 
 private:
     int numPoses;

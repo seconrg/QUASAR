@@ -1506,7 +1506,7 @@ RenderStats QUASARStreamer::generateFrame(
             // Keep the wide-FOV proxy generation camera aligned with the pose that produced the
             // wide-FOV render target; otherwise the dumped wide-FOV image can be correct while
             // the reconstructed wide-FOV quads still project into the wrong part of the final frame.
-            remoteCameraWideFOV.setViewMatrix(currentViewMatrix);
+            remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
 
             glm::mat4 remoteCameraWideFoVViewMatrix = remoteCameraWideFOV.getViewMatrix();
             glm::mat4 remoteCameraWideFoVProjectionMatrix = remoteCameraWideFOV.getProjectionMatrix();

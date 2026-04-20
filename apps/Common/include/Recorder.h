@@ -69,6 +69,7 @@ public:
     void start();
     void stop();
     void captureFrame(const Camera& camera);
+    int getNextFrameID() const { return frameCount.load(); }
 
     const char* const* getFormatCStrArray() const {
         static std::vector<const char*> cstrs;
