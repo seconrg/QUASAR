@@ -131,6 +131,7 @@ void QuadMesh::appendQuads(const QuadSet& quadSet, const glm::vec2& gBufferSize,
     // Set new current proxy count
     currNumProxies = newNumProxies;
     currNumProxiesTransparent = incomingNumProxiesTransparent;
+    currentQuadBuffers.resize(currNumProxies, currNumProxiesTransparent);
 
     stats.appendQuadsTimeMs = timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);
 }

@@ -52,6 +52,8 @@ public:
     void createMeshFromProxies(const QuadSet& quadSet, const glm::vec2& gBufferSize, const PerspectiveCamera& remoteCamera);
 
     BufferSizes getBufferSizes() const;
+    const QuadBuffers& getQuadBuffers() const { return currentQuadBuffers; }
+    const Buffer& getQuadIndexMapBuffer() const { return quadIndexMap; }
 
     RenderStats draw(GLenum primitiveType) override;
 

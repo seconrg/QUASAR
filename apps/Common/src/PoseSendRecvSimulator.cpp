@@ -42,6 +42,7 @@ void PoseSendRecvSimulator::clear() {
     rtts.clear();
     positionHistory.clear();
     rotationHistory.clear();
+    lastPredictionDebugInfo = {};
 }
 
 void PoseSendRecvSimulator::sendPose(const PerspectiveCamera& camera, double now) {
@@ -81,10 +82,17 @@ bool PoseSendRecvSimulator::recvPoseToRender(Pose& pose, double now) {
     double jitterPredicted = randomJitter();
 
     Pose poseToSend = (networkLatencyS != 0) ? outPoses.front() : outPoses.back();
+    PredictionDebugInfo predictionDebugInfo{};
     if (posePrediction && outPoses.size() >= 3) {
         auto& lastPose = outPoses[outPoses.size() - 1];
         auto& prevPose = outPoses[outPoses.size() - 2];
         auto& secondPrevPose = outPoses[outPoses.size() - 3];
+        predictionDebugInfo.valid = true;
+        predictionDebugInfo.usedPrediction = true;
+        predictionDebugInfo.latestTimestampUs = static_cast<int64_t>(lastPose.send_timestamp);
+        predictionDebugInfo.previousTimestampUs = static_cast<int64_t>(prevPose.send_timestamp);
+        predictionDebugInfo.secondPreviousTimestampUs = static_cast<int64_t>(secondPrevPose.send_timestamp);
+        predictionDebugInfo.predictedTimestampUs = static_cast<int64_t>(timeutils::secondsToMicros(now + dtFuture + jitterPredicted));
 
         if (!getPosePredicted(poseToSend, lastPose, prevPose, secondPrevPose, now + dtFuture + jitterPredicted)) {
             return false;
@@ -100,6 +108,7 @@ bool PoseSendRecvSimulator::recvPoseToRender(Pose& pose, double now) {
     rtts.push_back(timeutils::secondsToMillis(now - oldTimestampS));
 
     pose = poseToSend;
+    lastPredictionDebugInfo = predictionDebugInfo;
     if (!posePrediction || outPoses.size() >= 3) {
         outPoses.pop_front();
         outOrigTimestamps.pop_front();
@@ -274,6 +283,7 @@ bool PoseSendRecvSimulator::getPosePredicted(
 
     predictedPose.setViewMatrix(predictedView);
     predictedPose.setProjectionMatrix(latest.mono.proj);
+    predictedPose.send_timestamp = static_cast<double>(timeutils::secondsToMicros(targetFutureTimeS));
 
     spdlog::info("  Latest Position:   ({:.3f}, {:.3f}, {:.3f})", p0.x, p0.y, p0.z);
     spdlog::info("  Previous Position: ({:.3f}, {:.3f}, {:.3f})", p1.x, p1.y, p1.z);

@@ -3,7 +3,9 @@
 
 #include <deque>
 #include <memory>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include <CameraPose.h>
 #include <DepthMesh.h>
@@ -80,6 +82,8 @@ struct QUASARStreamerCreateParams {
     bool trimWideFov = false;
     /// If true, \p generateFrame only honors \p wideFovGroundTruthView when it is non-null (client/true pose).
     bool useWideFovGroundTruth = false;
+    /// If non-empty, write per-frame corner-depth datasets here.
+    std::string datasetOutputDir;
 };
 
 class QUASARStreamer : public DataStreamerTCP {
@@ -131,6 +135,7 @@ public:
     std::string videoURL;
     std::string proxiesURL;
     std::string wideFovImageDumpDir;
+    std::string datasetOutputDir;
 
     struct Stats {
         double totalRenderTimeMs = 0.0;
@@ -167,6 +172,8 @@ public:
 
     std::ofstream bandwidthStatsCSVFile;
     std::string bandwidthStatsCSVFileName;
+    std::ofstream cornerDepthDatasetCSVFile;
+    std::string cornerDepthDatasetCSVFileName;
     double prevSendTimeMs = 0.0;
 
     int frameID = 0;

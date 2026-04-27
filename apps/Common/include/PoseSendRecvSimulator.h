@@ -27,6 +27,15 @@ public:
     bool posePrediction;
     bool poseSmoothing;
 
+    struct PredictionDebugInfo {
+        bool valid = false;
+        bool usedPrediction = false;
+        int64_t latestTimestampUs = -1;
+        int64_t previousTimestampUs = -1;
+        int64_t secondPreviousTimestampUs = -1;
+        int64_t predictedTimestampUs = -1;
+    };
+
     struct ErrorStats {
         glm::vec2 positionErrMeanStd;
         glm::vec2 positionErrMinMax;
@@ -55,6 +64,7 @@ public:
     void accumulateError(const PerspectiveCamera& camera, const PerspectiveCamera& remoteCamera);
     ErrorStats getAvgErrors();
     void printErrors();
+    const PredictionDebugInfo& getLastPredictionDebugInfo() const { return lastPredictionDebugInfo; }
 
 private:
     double networkLatencyS;
@@ -81,6 +91,8 @@ private:
 
     std::deque<glm::quat> rotationHistory;
     static constexpr size_t maxRotationHistorySize = 5;
+
+    PredictionDebugInfo lastPredictionDebugInfo;
 
     glm::vec3 savitzkyGolayFilter(const std::deque<glm::vec3>& buffer);
     glm::quat averageQuaternions(const std::deque<glm::quat>& quats);

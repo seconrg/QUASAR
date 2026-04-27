@@ -7,9 +7,11 @@
 #include <glm/gtx/quaternion.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -17,6 +19,7 @@
 using quasar::FileIO;
 using quasar::FrameRenderTarget;
 using quasar::Path;
+using quasar::Texture;
 using quasar::WideFovMaskMethod;
 
 namespace {
@@ -73,6 +76,264 @@ double narrowReprojectionQuadAreaPx2(const glm::vec3 c[4]) {
 
 constexpr float kPoseOnlyReprojectionMinDenominator = 1e-4f;
 constexpr size_t kMinReliableTrimmedWideFovAlphaTexels = 10000u;
+
+float decodePackedProxyDepth(uint32_t normalAndDepthPacked) {
+    return static_cast<float>(normalAndDepthPacked & 0xFFFFu) / 65535.0f;
+}
+
+bool decodePackedProxyFootprint(uint32_t packedMetadata, glm::uvec2& outOffset, uint32_t& outHalfSize) {
+    outOffset.x = (packedMetadata >> 20) & 0xFFFu;
+    outOffset.y = (packedMetadata >> 8) & 0xFFFu;
+    const uint32_t sizeAlphaFlattened = packedMetadata & 0xFFu;
+    const uint32_t size = (sizeAlphaFlattened >> 2) & 0x7Fu;
+    if (size == 0u || size >= 31u) {
+        return false;
+    }
+
+    outHalfSize = 1u << (size - 1u);
+    return outHalfSize > 0u;
+}
+
+bool tryGetCurrentNormalViewCornerPlaneDepths(
+    const quasar::QuadMesh& normalViewMesh,
+    const glm::uvec2& viewportSize,
+    float outDepths[4])
+{
+    if (viewportSize.x == 0u || viewportSize.y == 0u) {
+        return false;
+    }
+
+    const glm::ivec2 cornerPixels[4] = {
+        glm::ivec2(0, 0),
+        glm::ivec2(static_cast<int>(viewportSize.x) - 1, 0),
+        glm::ivec2(0, static_cast<int>(viewportSize.y) - 1),
+        glm::ivec2(static_cast<int>(viewportSize.x) - 1, static_cast<int>(viewportSize.y) - 1),
+    };
+
+    const quasar::QuadBuffers& quadBuffers = normalViewMesh.getQuadBuffers();
+    std::vector<uint32_t> packedNormalAndDepth;
+    std::vector<uint32_t> packedMetadatas;
+    packedNormalAndDepth.resize(quadBuffers.normalAndDepthBuffer.getSize());
+    packedMetadatas.resize(quadBuffers.metadatasBuffer.getSize());
+    quadBuffers.normalAndDepthBuffer.bind();
+    quadBuffers.normalAndDepthBuffer.getData(packedNormalAndDepth.data());
+    quadBuffers.normalAndDepthBuffer.unbind();
+    quadBuffers.metadatasBuffer.bind();
+    quadBuffers.metadatasBuffer.getData(packedMetadatas.data());
+    quadBuffers.metadatasBuffer.unbind();
+
+    bool foundAnyDepth = false;
+    for (int i = 0; i < 4; ++i) {
+        outDepths[i] = 1.0f;
+        float bestDistanceSquared = std::numeric_limits<float>::max();
+        int bestQuadIndex = -1;
+
+        for (uint32_t quadIndex = 0; quadIndex < quadBuffers.numProxies; ++quadIndex) {
+            if (quadIndex >= packedNormalAndDepth.size() || quadIndex >= packedMetadatas.size()) {
+                break;
+            }
+
+            const float depth = decodePackedProxyDepth(packedNormalAndDepth[quadIndex]);
+            if (!(depth > 0.0f && depth < 1.0f)) {
+                continue;
+            }
+
+            glm::uvec2 offset{0u};
+            uint32_t halfSize = 0u;
+            if (!decodePackedProxyFootprint(packedMetadatas[quadIndex], offset, halfSize)) {
+                continue;
+            }
+
+            const float minX = static_cast<float>(offset.x);
+            const float minY = static_cast<float>(offset.y);
+            const float maxX = minX + static_cast<float>(halfSize) - 1.0f;
+            const float maxY = minY + static_cast<float>(halfSize) - 1.0f;
+            const float px = static_cast<float>(cornerPixels[i].x);
+            const float py = static_cast<float>(cornerPixels[i].y);
+
+            const float dx = (px < minX) ? (minX - px) : ((px > maxX) ? (px - maxX) : 0.0f);
+            const float dy = (py < minY) ? (minY - py) : ((py > maxY) ? (py - maxY) : 0.0f);
+            const float distanceSquared = dx * dx + dy * dy;
+            if (distanceSquared < bestDistanceSquared) {
+                bestDistanceSquared = distanceSquared;
+                bestQuadIndex = static_cast<int>(quadIndex);
+                outDepths[i] = depth;
+            }
+        }
+
+        if (bestQuadIndex >= 0) {
+            spdlog::info(
+                "Trim-wideFov corner {} matched nearest proxy quad {} with plane depth {:.6f} (distance^2 {:.3f})",
+                i,
+                bestQuadIndex,
+                outDepths[i],
+                bestDistanceSquared);
+            foundAnyDepth = true;
+        }
+        else {
+            spdlog::warn(
+                "Trim-wideFov corner {} failed to find any valid proxy-plane depth; falling back to far-plane depth",
+                i);
+        }
+    }
+
+    return foundAnyDepth;
+}
+
+bool readDepthPixelsFromDepthStencilTexture(
+    const Texture& depthStencilTexture,
+    uint width,
+    uint height,
+    std::vector<float>& outDepths)
+{
+    if (width == 0 || height == 0) {
+        return false;
+    }
+    if (depthStencilTexture.array) {
+        spdlog::warn("Depth-texture readback does not support array textures yet");
+        return false;
+    }
+
+    outDepths.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 1.0f);
+
+    GLint previousReadFramebuffer = 0;
+    GLint previousDrawFramebuffer = 0;
+    GLint previousReadBuffer = 0;
+    GLint previousDrawBuffer = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &previousDrawFramebuffer);
+    glGetIntegerv(GL_READ_BUFFER, &previousReadBuffer);
+    glGetIntegerv(GL_DRAW_BUFFER, &previousDrawBuffer);
+
+    GLuint readFramebuffer = 0;
+    glGenFramebuffers(1, &readFramebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, readFramebuffer);
+
+    const GLenum textureTarget = depthStencilTexture.multiSampled ? GL_TEXTURE_2D_MULTISAMPLE : GL_TEXTURE_2D;
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, textureTarget, depthStencilTexture.ID, 0);
+    glReadBuffer(GL_NONE);
+    glDrawBuffer(GL_NONE);
+
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        spdlog::warn(
+            "Depth-texture readback framebuffer incomplete (status={} width={} height={})",
+            static_cast<unsigned int>(status),
+            width,
+            height);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(previousDrawFramebuffer));
+        glReadBuffer(static_cast<GLenum>(previousReadBuffer));
+        glDrawBuffer(static_cast<GLenum>(previousDrawBuffer));
+        glDeleteFramebuffers(1, &readFramebuffer);
+        return false;
+    }
+
+    glReadPixels(
+        0,
+        0,
+        static_cast<GLsizei>(width),
+        static_cast<GLsizei>(height),
+        GL_DEPTH_COMPONENT,
+        GL_FLOAT,
+        outDepths.data());
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(previousDrawFramebuffer));
+    glReadBuffer(static_cast<GLenum>(previousReadBuffer));
+    glDrawBuffer(static_cast<GLenum>(previousDrawBuffer));
+    glDeleteFramebuffers(1, &readFramebuffer);
+    return true;
+}
+
+bool getFrameRenderTargetCornerDepths(const FrameRenderTarget& frameRT, std::array<float, 4>& outDepths) {
+    if (frameRT.width == 0 || frameRT.height == 0) {
+        return false;
+    }
+
+    std::vector<float> depths;
+    if (!readDepthPixelsFromDepthStencilTexture(frameRT.depthStencilTexture, frameRT.width, frameRT.height, depths)) {
+        return false;
+    }
+
+    const GLint cornerPixels[4][2] = {
+        {0, 0},
+        {static_cast<GLint>(frameRT.width) - 1, 0},
+        {0, static_cast<GLint>(frameRT.height) - 1},
+        {static_cast<GLint>(frameRT.width) - 1, static_cast<GLint>(frameRT.height) - 1},
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        const size_t depthIndex =
+            static_cast<size_t>(cornerPixels[i][1]) * static_cast<size_t>(frameRT.width) +
+            static_cast<size_t>(cornerPixels[i][0]);
+        outDepths[i] = depths[depthIndex];
+    }
+
+    return true;
+}
+
+void logFrameRenderTargetCornerDepths(const FrameRenderTarget& frameRT, const char* label) {
+    if (frameRT.width == 0 || frameRT.height == 0) {
+        spdlog::warn("{} corner depth read skipped because frame RT has invalid size {}x{}", label, frameRT.width, frameRT.height);
+        return;
+    }
+
+    std::array<float, 4> cornerDepths{};
+    if (!getFrameRenderTargetCornerDepths(frameRT, cornerDepths)) {
+        spdlog::warn("{} corner depth read skipped because depthStencilTexture readback failed", label);
+        return;
+    }
+
+    const GLint cornerPixels[4][2] = {
+        {0, 0},
+        {static_cast<GLint>(frameRT.width) - 1, 0},
+        {0, static_cast<GLint>(frameRT.height) - 1},
+        {static_cast<GLint>(frameRT.width) - 1, static_cast<GLint>(frameRT.height) - 1},
+    };
+    const char* cornerNames[4] = {
+        "bottom-left",
+        "bottom-right",
+        "top-left",
+        "top-right",
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        spdlog::info(
+            "{} corner depth {}: pixel=({}, {}), depth={:.6f}",
+            label,
+            cornerNames[i],
+            cornerPixels[i][0],
+            cornerPixels[i][1],
+            cornerDepths[i]);
+    }
+}
+
+void logFrameRenderTargetDepthRange(const FrameRenderTarget& frameRT, const char* label) {
+    if (frameRT.width == 0 || frameRT.height == 0) {
+        spdlog::warn("{} depth-range read skipped because frame RT has invalid size {}x{}", label, frameRT.width, frameRT.height);
+        return;
+    }
+
+    std::vector<float> depths;
+    if (!readDepthPixelsFromDepthStencilTexture(frameRT.depthStencilTexture, frameRT.width, frameRT.height, depths)) {
+        spdlog::warn("{} depth-range read skipped because depthStencilTexture readback failed", label);
+        return;
+    }
+
+    float minDepth = std::numeric_limits<float>::max();
+    float maxDepth = std::numeric_limits<float>::lowest();
+    for (const float depth : depths) {
+        minDepth = std::min(minDepth, depth);
+        maxDepth = std::max(maxDepth, depth);
+    }
+
+    spdlog::info(
+        "{} depth range: min={:.6f}, max={:.6f}",
+        label,
+        minDepth,
+        maxDepth);
+}
 
 glm::mat3 buildAtwStyleCurrentToPreviousHomography(
     const glm::mat4& currentViewMatrix,
@@ -982,6 +1243,22 @@ size_t countNonZeroAlphaTexels(FrameRenderTarget& frameRT) {
     return nonZeroAlphaTexels;
 }
 
+struct PoseCsvRowInfo {
+    glm::vec3 position{0.0f};
+    glm::vec3 eulerRotationDegrees{0.0f};
+};
+
+PoseCsvRowInfo extractPoseCsvRowInfoFromViewMatrix(const glm::mat4& viewMatrix) {
+    PoseCsvRowInfo info;
+    glm::vec3 scale;
+    glm::quat rotationQuat;
+    glm::vec3 skew;
+    glm::vec4 perspective;
+    glm::decompose(glm::inverse(viewMatrix), scale, rotationQuat, info.position, skew, perspective);
+    info.eulerRotationDegrees = glm::degrees(glm::eulerAngles(glm::normalize(rotationQuat)));
+    return info;
+}
+
 } // namespace
 
 using namespace quasar;
@@ -997,6 +1274,7 @@ QUASARStreamer::QUASARStreamer(
     , videoURL(params.videoURL)
     , proxiesURL(params.proxiesURL)
     , wideFovImageDumpDir(params.wideFovImageDumpDir)
+    , datasetOutputDir(params.datasetOutputDir)
     , maxLayers(params.maxLayers)
     , wideFovPoseLagFrames(params.wideFovPoseLagFrames)
     , wideFovUpdatePeriodFrames(params.wideFovUpdatePeriodFrames != 0u ? params.wideFovUpdatePeriodFrames : 1u)
@@ -1297,6 +1575,19 @@ QUASARStreamer::QUASARStreamer(
     bandwidthStatsCSVFile << std::endl;
     bandwidthStatsCSVFile.close();
 
+    if (!datasetOutputDir.empty()) {
+        Path(datasetOutputDir).mkdirRecursive();
+        cornerDepthDatasetCSVFileName = (Path(datasetOutputDir) / "render_corner_depths.csv").str();
+        cornerDepthDatasetCSVFile.open(cornerDepthDatasetCSVFileName);
+        cornerDepthDatasetCSVFile
+            << "frame_id,pass_name,rendered_this_frame,pose_source,"
+            << "pos_x,pos_y,pos_z,rot_x_deg,rot_y_deg,rot_z_deg,"
+            << "depth_bottom_left,depth_bottom_right,depth_top_left,depth_top_right,"
+            << "depth_read_success"
+            << std::endl;
+        cornerDepthDatasetCSVFile.close();
+    }
+
     if (trimWideFov && !outputDir.empty()) {
         Path reprojectionMaskCompareDir = getReprojectionMaskCompareDir(wideFovImageDumpDir);
         reprojectionMaskCompareDir.mkdirRecursive();
@@ -1425,6 +1716,43 @@ RenderStats QUASARStreamer::generateFrame(
     
     frameID++;
     spdlog::info("Frame ID: {}", frameID);
+    const auto appendCornerDepthRow = [&](const char* passName,
+                                          bool renderedThisFrame,
+                                          const char* poseSource,
+                                          const glm::mat4& poseViewMatrix,
+                                          const FrameRenderTarget& frameRT) {
+        if (cornerDepthDatasetCSVFileName.empty()) {
+            return;
+        }
+
+        std::array<float, 4> cornerDepths{
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN(),
+        };
+        const bool depthReadSuccess = getFrameRenderTargetCornerDepths(frameRT, cornerDepths);
+        const PoseCsvRowInfo poseInfo = extractPoseCsvRowInfoFromViewMatrix(poseViewMatrix);
+
+        cornerDepthDatasetCSVFile.open(cornerDepthDatasetCSVFileName, std::ios::app);
+        cornerDepthDatasetCSVFile << frameID
+            << "," << passName
+            << "," << (renderedThisFrame ? 1 : 0)
+            << "," << poseSource
+            << "," << poseInfo.position.x
+            << "," << poseInfo.position.y
+            << "," << poseInfo.position.z
+            << "," << poseInfo.eulerRotationDegrees.x
+            << "," << poseInfo.eulerRotationDegrees.y
+            << "," << poseInfo.eulerRotationDegrees.z
+            << "," << cornerDepths[0]
+            << "," << cornerDepths[1]
+            << "," << cornerDepths[2]
+            << "," << cornerDepths[3]
+            << "," << (depthReadSuccess ? 1 : 0)
+            << std::endl;
+        cornerDepthDatasetCSVFile.close();
+    };
     // open file 
     quasarStatsCSVFile.open(quasarStatsCSVFileName, std::ios::app);
     quasarStatsCSVFile << frameID;
@@ -1458,6 +1786,15 @@ RenderStats QUASARStreamer::generateFrame(
         if (layer == 0) {
             renderStats += remoteRenderer.drawObjectsNoLighting(remoteScene, remoteCameraToUse);
             remoteRenderer.copyToFrameRT(renderTargetToUse);
+            remoteRenderer.gBuffer.blitDepth(renderTargetToUse);
+            logFrameRenderTargetDepthRange(renderTargetToUse, "Normal-view render");
+            logFrameRenderTargetCornerDepths(renderTargetToUse, "Normal-view render");
+            appendCornerDepthRow(
+                createResidualFrame ? "normal_view_residual_pose" : "normal_view",
+                true,
+                createResidualFrame ? "remoteCameraPrev" : "remoteCamera",
+                remoteCameraToUse.getViewMatrix(),
+                renderTargetToUse);
             // if (trimWideFov && effectiveWideFovGt != nullptr && !wideFovImageDumpDir.empty()) {
             //     dumpTrimWideFovAtwReprojectionDebug(
             //         static_cast<uint>(frameID),
@@ -1485,36 +1822,31 @@ RenderStats QUASARStreamer::generateFrame(
                 ? remoteCamera.getViewMatrix()
                 : remoteCameraPrev.getViewMatrix();
             glm::mat4 prevViewMatrixInverse = glm::inverse(prevViewMatrix);
-            // glm::mat4 prevViewMatrix = remoteCameraPrev.getViewMatrix();
             glm::mat4 prevProjectionMatrix = remoteCameraPrev.getProjectionMatrix();
-            
+
             glm::mat4 currentViewMatrix = effectiveWideFovGt != nullptr
                 ? *effectiveWideFovGt
                 : remoteCamera.getViewMatrix();
             glm::mat4 currentProjectionMatrix = remoteCamera.getProjectionMatrix();
 
-            const PoseDebugInfo previousPoseDebug = extractPoseDebugInfo(prevViewMatrix);
-            const PoseDebugInfo currentPoseDebug = extractPoseDebugInfo(currentViewMatrix);
             logPoseForDebug("Previous", prevViewMatrix);
             logPoseForDebug("Current", currentViewMatrix);
             spdlog::info("Current viewport size: ({}, {})", quadSet.getSize().x, quadSet.getSize().y);
 
-
-            glm::mat4 currentViewMatrixInverse = glm::inverse(currentViewMatrix);
-            glm::mat4 currentProjectionMatrixInverse = glm::inverse(currentProjectionMatrix);
+            glm::mat4 prevProjectionMatrixInverse = glm::inverse(prevProjectionMatrix);
             
             // Keep the wide-FOV proxy generation camera aligned with the pose that produced the
             // wide-FOV render target; otherwise the dumped wide-FOV image can be correct while
             // the reconstructed wide-FOV quads still project into the wrong part of the final frame.
             remoteCameraWideFOV.setViewMatrix(remoteCamera.getViewMatrix());
 
-            glm::mat4 remoteCameraWideFoVViewMatrix = remoteCameraWideFOV.getViewMatrix();
             glm::mat4 remoteCameraWideFoVProjectionMatrix = remoteCameraWideFOV.getProjectionMatrix();
         
             // if (totalBlackArea > 10000.0f) {
             if (trimWideFov) {
             const glm::vec2 viewportSize(remoteRenderer.width, remoteRenderer.height);
-            const glm::vec4 normalViewport(0.0f, 0.0f, quadSet.getSize().x, quadSet.getSize().y);
+            float cornerPlaneDepths[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+            tryGetCurrentNormalViewCornerPlaneDepths(referenceFrameMeshes[currMeshIndex], quadSet.getSize(), cornerPlaneDepths);
             const glm::vec3 normalViewportCorners[4] = {
                 glm::vec3(-1.0f, -1.0f, 1.0f),
                 glm::vec3(1.0f, -1.0f, 1.0f),
@@ -1522,17 +1854,20 @@ RenderStats QUASARStreamer::generateFrame(
                 glm::vec3(1.0f, 1.0f, 1.0f),
             };
 
-            // compute the transformation matrix
             glm::vec2 timewarpedPreviousCornersInNormalView[4];
             glm::vec2 timewarpedPreviousCornersInWideFov[4];
             for (int i = 0; i < 4; i++) {
                 glm::vec3 corner = normalViewportCorners[i];
+                const float cornerPlaneDepthNdc = cornerPlaneDepths[i] * 2.0f - 1.0f;
+                corner.z = cornerPlaneDepthNdc;
+                spdlog::info(
+                    "Trim-wideFov corner {} using proxy-plane depth {:.6f} (ndc z {:.6f})",
+                    i,
+                    cornerPlaneDepths[i],
+                    cornerPlaneDepthNdc);
 
-                // we assume the corners are in the new frame (currentView)
-                // project it back to the previous frame's coordinate to see whether it is visible in the previous frame
-                glm::vec4 cornerInWorld = currentViewMatrixInverse * currentProjectionMatrixInverse * glm::vec4(corner, 1.0f);
-                
-                glm::vec4 reprojectedCorner = prevProjectionMatrix * prevViewMatrix * cornerInWorld;
+                glm::vec4 cornerInWorld = prevViewMatrixInverse * prevProjectionMatrixInverse * glm::vec4(corner, 1.0f);
+                glm::vec4 reprojectedCorner = currentProjectionMatrix * currentViewMatrix * cornerInWorld;
 
                 spdlog::info(
                     "Corner {}: world=({:.3f}, {:.3f}, {:.3f}), reprojected=({:.3f}, {:.3f}, {:.3f}, {:.3f})",
@@ -1545,12 +1880,12 @@ RenderStats QUASARStreamer::generateFrame(
                 reprojectedCornerNDC.y = (reprojectedCornerNDC.y + 1.0f) * 0.5f * quadSet.getSize().y;
                 timewarpedPreviousCornersInNormalView[i] = glm::vec2{reprojectedCornerNDC.x, reprojectedCornerNDC.y};
 
-                glm::vec4 reprojectedCornerInWideFov = remoteCameraWideFoVProjectionMatrix * prevViewMatrix * cornerInWorld;
+                glm::vec4 reprojectedCornerInWideFov = remoteCameraWideFoVProjectionMatrix * currentViewMatrix * cornerInWorld;
 
                 spdlog::info(
                     "Corner {}: reprojected widefov=({:.3f}, {:.3f}, {:.3f}, {:.3f})",
                     i,
-                    reprojectedCornerInWideFov.x, reprojectedCornerInWideFov.y, 
+                    reprojectedCornerInWideFov.x, reprojectedCornerInWideFov.y,
                     reprojectedCornerInWideFov.z, reprojectedCornerInWideFov.w);
                 glm::vec4 reprojectedCornerInWideFovNDC = reprojectedCornerInWideFov / reprojectedCornerInWideFov.w;
 
@@ -1562,21 +1897,63 @@ RenderStats QUASARStreamer::generateFrame(
             spdlog::info("Timewarped previous corners projected into normal view:");
             for (int i = 0; i < 4; ++i) {
                 const glm::vec2& normalCorner = timewarpedPreviousCornersInNormalView[i];
-                spdlog::info(
-                    "  Corner {}: raw=({:.3f}, {:.3f})",
-                    i,
-                    normalCorner.x,
-                    normalCorner.y);
+                spdlog::info("  Corner {}: raw=({:.3f}, {:.3f})", i, normalCorner.x, normalCorner.y);
             }
 
             spdlog::info("Timewarped previous corners projected into wide FOV:");
             for (int i = 0; i < 4; ++i) {
                 const glm::vec2& wideFovCorner = timewarpedPreviousCornersInWideFov[i];
+                spdlog::info("  Corner {}: raw=({:.3f}, {:.3f})", i, wideFovCorner.x, wideFovCorner.y);
+            }
+
+            glm::vec2 normalViewRectMin = glm::vec2(normalViewCornersInWideFoVImage[0]);
+            glm::vec2 normalViewRectMax = glm::vec2(normalViewCornersInWideFoVImage[0]);
+            for (int i = 1; i < 4; ++i) {
+                const glm::vec2 normalViewRectCorner = glm::vec2(normalViewCornersInWideFoVImage[i]);
+                normalViewRectMin = glm::min(normalViewRectMin, normalViewRectCorner);
+                normalViewRectMax = glm::max(normalViewRectMax, normalViewRectCorner);
+            }
+            spdlog::info(
+                "Normal view rect in wide FOV image: min=({:.3f}, {:.3f}), max=({:.3f}, {:.3f})",
+                normalViewRectMin.x, normalViewRectMin.y,
+                normalViewRectMax.x, normalViewRectMax.y);
+
+            glm::vec2 quadWindowCorners[4] = {
+                glm::vec2(0.0f, 0.0f),
+                glm::vec2(quadSet.getSize().x, 0.0f),
+                glm::vec2(0.0f, quadSet.getSize().y),
+                glm::vec2(quadSet.getSize().x, quadSet.getSize().y),
+            };
+
+            for (int i = 0; i < 4; ++i) {
+                const glm::vec2 originalWideFovCorner = timewarpedPreviousCornersInWideFov[i];
+
+                bool xInRange = originalWideFovCorner.x >= normalViewRectMin.x && originalWideFovCorner.x <= normalViewRectMax.x;
+                bool yInRange = originalWideFovCorner.y >= normalViewRectMin.y && originalWideFovCorner.y <= normalViewRectMax.y;
+
+                if (!xInRange && !yInRange) {
+                    continue;
+                } else {
+                    const glm::vec2 originalNormalViewCorner = glm::vec2(timewarpedPreviousCornersInNormalView[i]);
+                    const glm::vec2 candidateCorner = glm::vec2(quadWindowCorners[i]);
+                    const glm::vec2 deltaInNormalView = candidateCorner - originalNormalViewCorner;
+
+                    if (xInRange) {
+                        timewarpedPreviousCornersInWideFov[i].x = normalViewCornersInWideFoVImage[i].x + deltaInNormalView.x;
+                    }
+                    if (yInRange) {
+                        timewarpedPreviousCornersInWideFov[i].y = normalViewCornersInWideFoVImage[i].y + deltaInNormalView.y;
+                    }
+                }
+
                 spdlog::info(
-                    "  Corner {}: raw=({:.3f}, {:.3f})",
+                    "Mirrored timewarped corner {}  because wideFov=({:.3f}, {:.3f}) was inside the normal-view rect; "
+                    "mirrored=({:.3f}, {:.3f})",
                     i,
-                    wideFovCorner.x,
-                    wideFovCorner.y);
+                    originalWideFovCorner.x,
+                    originalWideFovCorner.y,
+                    timewarpedPreviousCornersInWideFov[i].x,
+                    timewarpedPreviousCornersInWideFov[i].y);
             }
 
             remoteRenderer.gBuffer.bind();
@@ -1661,6 +2038,13 @@ RenderStats QUASARStreamer::generateFrame(
                 Path pngPath = dumpDir / ("widefov_" + std::to_string(frameID) + ".png");
                 renderTargetToUse.writeColorAsPNG(pngPath.str());
             }
+
+            appendCornerDepthRow(
+                "wide_fov",
+                true,
+                effectiveWideFovGt != nullptr ? "wideFovGroundTruthView" : "remoteCameraWideFOV",
+                remoteCameraToUse.getViewMatrix(),
+                renderTargetToUse);
 
         }
         stats.totalRenderTimeMs += timeutils::microsToMillis(timeutils::getTimeMicros() - startTime);

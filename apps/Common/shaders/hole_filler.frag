@@ -10,18 +10,49 @@ uniform sampler2D screenDepth;
 uniform sampler2D screenNormals;
 uniform sampler2D screenPositions;
 uniform usampler2D idTexture;
+uniform sampler2D wideFovFillColor;
+uniform sampler2D wideFovFillAlpha;
+uniform vec2 wideFovNormalViewCorners[4];
 
 uniform float depthThreshold;
 uniform int searchRadius = 3;
 
 uniform bool tonemap = true;
+uniform bool useWideFovFill = false;
 uniform float exposure = 1.0;
+
+bool isNearlyBlack(vec3 color) {
+    return max(max(abs(color.r), abs(color.g)), abs(color.b)) <= 1e-4;
+}
+
+vec2 mapNormalViewPixelToWideFovTexCoord() {
+    vec2 screenSizePx = vec2(textureSize(screenColor, 0));
+    vec2 wideFovSizePx = vec2(textureSize(wideFovFillColor, 0));
+    // The stencil trim path uses GL viewport pixel coordinates, so use fragment coordinates
+    // here as well instead of the post-process UV convention.
+    vec2 normalPixel = gl_FragCoord.xy;
+    vec2 basisX = (wideFovNormalViewCorners[1] - wideFovNormalViewCorners[0]) / screenSizePx.x;
+    vec2 basisY = (wideFovNormalViewCorners[2] - wideFovNormalViewCorners[0]) / screenSizePx.y;
+    vec2 wideFovPixel = wideFovNormalViewCorners[0] + basisX * normalPixel.x + basisY * normalPixel.y;
+    return clamp(wideFovPixel / wideFovSizePx, vec2(0.0), vec2(1.0));
+}
 
 void main() {
     vec3 color = texture(screenColor, TexCoord).rgb;
     float centerDepth = texture(screenDepth, TexCoord).r;
+    bool usedWideFovFill = false;
 
-    if (centerDepth >= MAX_DEPTH) {
+    if (useWideFovFill && isNearlyBlack(color)) {
+        vec2 wideFovTexCoord = mapNormalViewPixelToWideFovTexCoord();
+        float wideFovAlpha = texture(wideFovFillAlpha, wideFovTexCoord).r;
+        vec3 wideFovColor = texture(wideFovFillColor, wideFovTexCoord).rgb;
+        if ((wideFovAlpha > 0.0 || !isNearlyBlack(wideFovColor)) && !isNearlyBlack(wideFovColor)) {
+            color = wideFovColor;
+            usedWideFovFill = true;
+        }
+    }
+
+    if (!usedWideFovFill && centerDepth >= MAX_DEPTH) {
         vec2 textureSize = vec2(textureSize(screenColor, 0));
 
         bool isSkyBox = true;

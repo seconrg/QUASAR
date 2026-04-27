@@ -31,14 +31,147 @@
 #include <Utils/TimeUtils.h>
 
 #include <glad/glad.h>
+#include <glm/gtx/matrix_decompose.hpp>
+#include <glm/gtx/quaternion.hpp>
+#include <nlohmann/json.hpp>
 #include <deque>
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 using namespace quasar;
+
+namespace {
+
+constexpr const char* kWideFovGroundTruthPoseRecordsPath =
+    "/media/wuhaolu/c54fff3f-cab5-4dcf-94c3-c83855e5a9bd/quasarOutput/profileCode/imageQualityCorrelation/robot_lab/"
+    "quasarTrimWithRealRender_prev_curr_pose_records.json";
+
+struct WideFovGroundTruthPoseRecord {
+    int recordedFrameID = -1;
+    glm::vec3 position{0.0f};
+    glm::vec3 eulerRotationDegrees{0.0f};
+};
+
+using WideFovGroundTruthPoseRecordMap = std::unordered_map<int, WideFovGroundTruthPoseRecord>;
+
+std::optional<WideFovGroundTruthPoseRecordMap> loadWideFovGroundTruthPoseRecords(const std::string& jsonPath) {
+    std::ifstream file(jsonPath);
+    if (!file.is_open()) {
+        spdlog::warn("Failed to open wide-FOV ground-truth pose record file: {}", jsonPath);
+        return std::nullopt;
+    }
+
+    nlohmann::json root;
+    try {
+        file >> root;
+    }
+    catch (const std::exception& e) {
+        spdlog::warn("Failed to parse wide-FOV ground-truth pose record file {}: {}", jsonPath, e.what());
+        return std::nullopt;
+    }
+
+    const auto remoteRenderFramesIt = root.find("remote_render_frames");
+    if (remoteRenderFramesIt == root.end() || !remoteRenderFramesIt->is_object()) {
+        spdlog::warn("Wide-FOV ground-truth pose record file {} is missing remote_render_frames", jsonPath);
+        return std::nullopt;
+    }
+
+    WideFovGroundTruthPoseRecordMap recordsByRemoteFrameID;
+    for (const auto& [remoteFrameIDText, remoteFrameEntry] : remoteRenderFramesIt->items()) {
+        if (!remoteFrameEntry.is_object()) {
+            continue;
+        }
+
+        const auto recordedFramesIt = remoteFrameEntry.find("Recorded Frame");
+        if (recordedFramesIt == remoteFrameEntry.end() || !recordedFramesIt->is_object() || recordedFramesIt->empty()) {
+            continue;
+        }
+
+        int bestRecordedFrameID = -1;
+        const nlohmann::json* bestRecordedFramePose = nullptr;
+        for (const auto& [recordedFrameIDText, recordedFramePose] : recordedFramesIt->items()) {
+            try {
+                const int recordedFrameID = std::stoi(recordedFrameIDText);
+                if (recordedFrameID > bestRecordedFrameID) {
+                    bestRecordedFrameID = recordedFrameID;
+                    bestRecordedFramePose = &recordedFramePose;
+                }
+            }
+            catch (const std::exception&) {
+                continue;
+            }
+        }
+
+        if (bestRecordedFramePose == nullptr || bestRecordedFrameID < 0) {
+            continue;
+        }
+
+        try {
+            const auto& position = bestRecordedFramePose->at("position");
+            const auto& rotation = bestRecordedFramePose->at("euler_rotation_degrees");
+            WideFovGroundTruthPoseRecord record;
+            record.recordedFrameID = bestRecordedFrameID;
+            record.position = glm::vec3(
+                position.at("x").get<float>(),
+                position.at("y").get<float>(),
+                position.at("z").get<float>());
+            record.eulerRotationDegrees = glm::vec3(
+                rotation.at("x").get<float>(),
+                rotation.at("y").get<float>(),
+                rotation.at("z").get<float>());
+            recordsByRemoteFrameID.emplace(std::stoi(remoteFrameIDText), record);
+        }
+        catch (const std::exception& e) {
+            spdlog::warn(
+                "Skipping malformed wide-FOV ground-truth pose record for remote frame {} in {}: {}",
+                remoteFrameIDText,
+                jsonPath,
+                e.what());
+        }
+    }
+
+    spdlog::info(
+        "Loaded {} remote-frame -> recorded-frame wide-FOV ground-truth pose mappings from {}",
+        recordsByRemoteFrameID.size(),
+        jsonPath);
+    return recordsByRemoteFrameID;
+}
+
+glm::mat4 buildViewMatrixFromRecordedPose(
+    const glm::vec3& position,
+    const glm::vec3& eulerRotationDegrees,
+    const glm::mat4& projectionMatrix)
+{
+    PerspectiveCamera poseCamera(projectionMatrix);
+    poseCamera.setPosition(position);
+    poseCamera.setRotationEuler(eulerRotationDegrees);
+    poseCamera.updateViewMatrix();
+    return poseCamera.getViewMatrix();
+}
+
+struct PoseCsvInfo {
+    glm::vec3 position{0.0f};
+    glm::quat rotationQuat{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 eulerRotationDegrees{0.0f};
+};
+
+PoseCsvInfo extractPoseCsvInfoFromViewMatrix(const glm::mat4& viewMatrix) {
+    PoseCsvInfo info;
+    glm::vec3 scale;
+    glm::vec3 skew;
+    glm::vec4 perspective;
+    glm::decompose(glm::inverse(viewMatrix), scale, info.rotationQuat, info.position, skew, perspective);
+    info.rotationQuat = glm::normalize(info.rotationQuat);
+    info.eulerRotationDegrees = glm::degrees(glm::eulerAngles(info.rotationQuat));
+    return info;
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
     Config config{};
@@ -239,6 +372,8 @@ int main(int argc, char** argv) {
     }
     bool trimWideFov = wideFovMaskMethod == WideFovMaskMethod::Stencil;
     bool useWideFovGroundTruth = args::get(useWideFovGroundTruthIn);
+    const auto wideFovGroundTruthPoseRecords =
+        loadWideFovGroundTruthPoseRecords(kWideFovGroundTruthPoseRecordsPath);
 
     spdlog::info("Wide FOV Update Period Frames: {}", wideFovUpdatePeriodFrames);
     spdlog::info("Trim Wide FOV: {}", trimWideFov ? "Enabled" : "Disabled");
@@ -264,19 +399,24 @@ int main(int argc, char** argv) {
             .wideFovMaskMethod = wideFovMaskMethod,
             .trimWideFov = trimWideFov,
             .useWideFovGroundTruth = useWideFovGroundTruth,
+            .datasetOutputDir = outputPath.str(),
         });
 
     quasar.addMeshesToScene(localScene);
 
-    // filestream for dumping the pose returned by recvPoseToRender and the camera pose (local pose)
-
     std::ofstream recvPoseToRenderFile((outputPath / "recv_pose_to_render.csv").str());
-    recvPoseToRenderFile << "timestamp_us,tx,ty,tz,qx,qy,qz,qw" << std::endl;
-    std::ofstream cameraPoseFile("camera_poses.csv");
-    cameraPoseFile << "time_ms,"
-             << "camera_pos_x,camera_pos_y,camera_pos_z,"
-             << "camera_rot_x,camera_rot_y,camera_rot_z"
-             << std::endl;
+    recvPoseToRenderFile
+        << "recorded_frame_id,pose_timestamp_us,"
+        << "tx,ty,tz,qx,qy,qz,qw,rx_deg,ry_deg,rz_deg" << std::endl;
+    std::ofstream predictionPoseTimestampsFile((outputPath / "pose_prediction_timestamps.csv").str());
+    predictionPoseTimestampsFile
+        << "recorded_frame_id,prediction_used,"
+        << "latest_pose_timestamp_us,prev_pose_timestamp_us,prev_but_two_pose_timestamp_us,predicted_pose_timestamp_us"
+        << std::endl;
+    std::ofstream recordedFramePoseFile((outputPath / "recorded_frame_render_poses.csv").str());
+    recordedFramePoseFile
+        << "recorded_frame_id,pose_timestamp_us,render_now_us,"
+        << "tx,ty,tz,qx,qy,qz,qw,rx_deg,ry_deg,rz_deg" << std::endl;
     
 
     // Post processing
@@ -618,6 +758,8 @@ int main(int argc, char** argv) {
     double lastRenderTime = -INFINITY;
     bool updateClient = !saveImages;
     int frameCounter = 0;
+    PoseSendRecvSimulator::PredictionDebugInfo activePredictionDebugInfo;
+    std::optional<Pose> activeRemoteRenderPose;
 
     std::string wideFovClientColorTextureDumpDir = args::get(wideFovClientColorTextureDumpDirIn);
     std::string wideFovClientTexelUsageDumpDir;
@@ -628,7 +770,6 @@ int main(int argc, char** argv) {
         wideFovClientTexelUsageDumpDir = outputPath.str() + "/widefov_texel_usage";
     }
 
-    bool dumpCameraPoses = false;
     app.onRender([&](double now, double dt) {
         // Handle mouse input
         if (!(ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantCaptureMouse)) {
@@ -723,7 +864,8 @@ int main(int argc, char** argv) {
                 Pose clientPosePred;
                 if (poseSendRecvSimulator.recvPoseToRender(clientPosePred, now)) {
                     remoteCamera.setViewMatrix(clientPosePred.mono.view);
-
+                    activeRemoteRenderPose = clientPosePred;
+                    activePredictionDebugInfo = poseSendRecvSimulator.getLastPredictionDebugInfo();
                 }
                 spdlog::info("Remote Render with pose: {}, {}, {}", remoteCamera.getPosition().x, remoteCamera.getPosition().y, remoteCamera.getPosition().z);
                 // If we do not have a new pose, just send a new frame with the old pose
@@ -740,7 +882,6 @@ int main(int argc, char** argv) {
                     remoteRot.x,
                     remoteRot.y,
                     remoteRot.z);
-            dumpCameraPoses = true;
 
             // pop E from Es on the front
             // if (!Es.empty()) {
@@ -754,16 +895,48 @@ int main(int argc, char** argv) {
             glm::mat4 nextPoseViewMatrix(1.0f);
 
             if (useWideFovGroundTruth) {
-                wideFovGroundTruthView = &camera.getViewMatrix();
+                const int nextQuasarRemoteFrameID = quasar.frameID + 1;
+                bool foundRecordedPoseForRemoteFrame = false;
 
-                if (const auto nextPose = cameraAnimator.getNextPose()) {
-                    PerspectiveCamera nextPoseCamera(camera.getProjectionMatrix());
-                    nextPoseCamera.setPosition(nextPose->position);
-                    nextPoseCamera.setRotationQuat(nextPose->rotation);
-                    nextPoseCamera.updateViewMatrix();
+                if (wideFovGroundTruthPoseRecords.has_value()) {
+                    const auto recordIt = wideFovGroundTruthPoseRecords->find(nextQuasarRemoteFrameID);
+                    if (recordIt != wideFovGroundTruthPoseRecords->end()) {
+                        nextPoseViewMatrix = buildViewMatrixFromRecordedPose(
+                            recordIt->second.position,
+                            recordIt->second.eulerRotationDegrees,
+                            camera.getProjectionMatrix());
+                        wideFovGroundTruthView = &nextPoseViewMatrix;
+                        foundRecordedPoseForRemoteFrame = true;
+                        spdlog::info(
+                            "Using wide-FOV GT recorded pose from recorded frame {} for QUASAR remote frame {}: "
+                            "pos=({}, {}, {}), rot_deg=({}, {}, {})",
+                            recordIt->second.recordedFrameID,
+                            nextQuasarRemoteFrameID,
+                            recordIt->second.position.x,
+                            recordIt->second.position.y,
+                            recordIt->second.position.z,
+                            recordIt->second.eulerRotationDegrees.x,
+                            recordIt->second.eulerRotationDegrees.y,
+                            recordIt->second.eulerRotationDegrees.z);
+                    }
+                }
 
-                    nextPoseViewMatrix = nextPoseCamera.getViewMatrix();
-                    wideFovGroundTruthView = &nextPoseViewMatrix;
+                if (!foundRecordedPoseForRemoteFrame) {
+                    wideFovGroundTruthView = &camera.getViewMatrix();
+
+                    if (const auto nextPose = cameraAnimator.getNextPose()) {
+                        PerspectiveCamera nextPoseCamera(camera.getProjectionMatrix());
+                        nextPoseCamera.setPosition(nextPose->position);
+                        nextPoseCamera.setRotationQuat(nextPose->rotation);
+                        nextPoseCamera.updateViewMatrix();
+
+                        nextPoseViewMatrix = nextPoseCamera.getViewMatrix();
+                        wideFovGroundTruthView = &nextPoseViewMatrix;
+                    }
+
+                    spdlog::info(
+                        "Falling back to animator/client wide-FOV GT pose for QUASAR remote frame {} because no recorded pose mapping was found",
+                        nextQuasarRemoteFrameID);
                 }
             }
 
@@ -862,16 +1035,6 @@ int main(int argc, char** argv) {
         //         recorder.captureFrame(camera);
         //     }
         // }
-        // save the camera pose after rendering
-        glm::vec3 predictedPos = camera.getPosition();
-        glm::vec3 predictedRot = camera.getRotationEuler();
-        if (dumpCameraPoses) {
-            cameraPoseFile << static_cast<uint64_t>(now * 1000) << ","
-                 << predictedPos.x << "," << predictedPos.y << "," << predictedPos.z << ","
-                 << predictedRot.x << "," << predictedRot.y << "," << predictedRot.z << std::endl;
-            dumpCameraPoses = false;
-        }
-        
         // quasar.setDrawState(QuadMesh::DrawState::TRANSPARENT); // then draw transparent quads
         // renderStats += renderer.drawObjects(localScene, camera, 0);
 
@@ -912,6 +1075,54 @@ int main(int argc, char** argv) {
 
         poseSendRecvSimulator.accumulateError(camera, remoteCamera);
 
+        auto dumpPosePredictionAndRecordedPoseCsvRows = [&](int recordedFrameID) {
+            predictionPoseTimestampsFile
+                << recordedFrameID << ","
+                << (activePredictionDebugInfo.usedPrediction ? 1 : 0) << ","
+                << activePredictionDebugInfo.latestTimestampUs << ","
+                << activePredictionDebugInfo.previousTimestampUs << ","
+                << activePredictionDebugInfo.secondPreviousTimestampUs << ","
+                << activePredictionDebugInfo.predictedTimestampUs
+                << std::endl;
+
+            const glm::quat recordedFrameRotationQuat = glm::normalize(camera.getRotationQuat());
+            const int64_t recordedPoseTimestampUs = static_cast<int64_t>(timeutils::secondsToMicros(camera.getTimestamp()));
+            const int64_t renderNowTimestampUs = static_cast<int64_t>(timeutils::secondsToMicros(now));
+            const glm::vec3 recordedFramePosition = camera.getPosition();
+            const glm::vec3 recordedFrameEuler = camera.getRotationEuler();
+            recordedFramePoseFile
+                << recordedFrameID << ","
+                << recordedPoseTimestampUs << ","
+                << renderNowTimestampUs << ","
+                << recordedFramePosition.x << "," << recordedFramePosition.y << "," << recordedFramePosition.z << ","
+                << recordedFrameRotationQuat.x << "," << recordedFrameRotationQuat.y << ","
+                << recordedFrameRotationQuat.z << "," << recordedFrameRotationQuat.w << ","
+                << recordedFrameEuler.x << "," << recordedFrameEuler.y << "," << recordedFrameEuler.z
+                << std::endl;
+
+            if (activeRemoteRenderPose.has_value()) {
+                const PoseCsvInfo remoteRenderPoseInfo = extractPoseCsvInfoFromViewMatrix(activeRemoteRenderPose->mono.view);
+                recvPoseToRenderFile
+                    << recordedFrameID << ","
+                    << static_cast<int64_t>(activeRemoteRenderPose->send_timestamp) << ","
+                    << remoteRenderPoseInfo.position.x << "," << remoteRenderPoseInfo.position.y << "," << remoteRenderPoseInfo.position.z << ","
+                    << remoteRenderPoseInfo.rotationQuat.x << "," << remoteRenderPoseInfo.rotationQuat.y << ","
+                    << remoteRenderPoseInfo.rotationQuat.z << "," << remoteRenderPoseInfo.rotationQuat.w << ","
+                    << remoteRenderPoseInfo.eulerRotationDegrees.x << "," << remoteRenderPoseInfo.eulerRotationDegrees.y << ","
+                    << remoteRenderPoseInfo.eulerRotationDegrees.z
+                    << std::endl;
+            }
+            else {
+                recvPoseToRenderFile
+                    << recordedFrameID << ","
+                    << -1 << ","
+                    << -1 << "," << -1 << "," << -1 << ","
+                    << -1 << "," << -1 << "," << -1 << "," << -1 << ","
+                    << -1 << "," << -1 << "," << -1
+                    << std::endl;
+            }
+        };
+
         if (cameraPathFileIn) {
 
             glm::vec3 cameraPos = camera.getPosition();
@@ -924,7 +1135,9 @@ int main(int argc, char** argv) {
                 cameraRot.x,
                 cameraRot.y,
                 cameraRot.z);
-            dumpWideFovTexelUsageForCapture(recorder.getNextFrameID());
+            const int recordedFrameID = recorder.getNextFrameID();
+            dumpPosePredictionAndRecordedPoseCsvRows(recordedFrameID);
+            dumpWideFovTexelUsageForCapture(recordedFrameID);
             recorder.captureFrame(camera);
 
             if (!cameraAnimator.running) {
@@ -934,7 +1147,9 @@ int main(int argc, char** argv) {
             }
         }
         else if (recordWindow.isRecording()) {
-            dumpWideFovTexelUsageForCapture(recorder.getNextFrameID());
+            const int recordedFrameID = recorder.getNextFrameID();
+            dumpPosePredictionAndRecordedPoseCsvRows(recordedFrameID);
+            dumpWideFovTexelUsageForCapture(recordedFrameID);
             recorder.captureFrame(camera);
         }
     });
