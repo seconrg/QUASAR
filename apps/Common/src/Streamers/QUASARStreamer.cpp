@@ -1680,7 +1680,8 @@ RenderStats QUASARStreamer::generateFrame(
     bool createResidualFrame,
     bool showNormals,
     bool showDepth,
-    const glm::mat4* wideFovGroundTruthView) {
+    const glm::mat4* wideFovGroundTruthView,
+    const std::vector<glm::mat4>* wideFovOverlapTargetViews) {
     const glm::mat4* const effectiveWideFovGt =
         (useWideFovGroundTruth && wideFovGroundTruthView != nullptr) ? wideFovGroundTruthView : nullptr;
 
@@ -1827,6 +1828,18 @@ RenderStats QUASARStreamer::generateFrame(
             glm::mat4 currentViewMatrix = effectiveWideFovGt != nullptr
                 ? *effectiveWideFovGt
                 : remoteCamera.getViewMatrix();
+            std::vector<glm::mat4> wideFovMaskTargetViews;
+            if (wideFovOverlapTargetViews != nullptr && !wideFovOverlapTargetViews->empty()) {
+                wideFovMaskTargetViews = *wideFovOverlapTargetViews;
+                currentViewMatrix = wideFovMaskTargetViews.front();
+                spdlog::info(
+                    "Using {} overlapping predicted target poses for wide-FOV stencil mask on frame {}",
+                    wideFovMaskTargetViews.size(),
+                    frameID);
+            }
+            else {
+                wideFovMaskTargetViews.push_back(currentViewMatrix);
+            }
             glm::mat4 currentProjectionMatrix = remoteCamera.getProjectionMatrix();
 
             logPoseForDebug("Previous", prevViewMatrix);
@@ -1975,6 +1988,66 @@ RenderStats QUASARStreamer::generateFrame(
             quadMaskShader.setVec2("uCorners[2]", timewarpedPreviousCornersInWideFov[2]);
             quadMaskShader.setVec2("uCorners[3]", timewarpedPreviousCornersInWideFov[3]);
             quadMaskQuad.draw();
+
+            for (size_t overlapTargetIndex = 1; overlapTargetIndex < wideFovMaskTargetViews.size(); ++overlapTargetIndex) {
+                glm::vec2 overlapCornersInNormalView[4];
+                glm::vec2 overlapCornersInWideFov[4];
+                const glm::mat4& overlapTargetViewMatrix = wideFovMaskTargetViews[overlapTargetIndex];
+                for (int i = 0; i < 4; i++) {
+                    glm::vec3 corner = normalViewportCorners[i];
+                    corner.z = cornerPlaneDepths[i] * 2.0f - 1.0f;
+
+                    glm::vec4 cornerInWorld =
+                        prevViewMatrixInverse * prevProjectionMatrixInverse * glm::vec4(corner, 1.0f);
+
+                    glm::vec4 reprojectedCorner =
+                        currentProjectionMatrix * overlapTargetViewMatrix * cornerInWorld;
+                    reprojectedCorner /= reprojectedCorner.w;
+                    reprojectedCorner.x = (reprojectedCorner.x + 1.0f) * 0.5f * quadSet.getSize().x;
+                    reprojectedCorner.y = (reprojectedCorner.y + 1.0f) * 0.5f * quadSet.getSize().y;
+                    overlapCornersInNormalView[i] = glm::vec2(reprojectedCorner);
+
+                    glm::vec4 reprojectedCornerInWideFov =
+                        remoteCameraWideFoVProjectionMatrix * overlapTargetViewMatrix * cornerInWorld;
+                    reprojectedCornerInWideFov /= reprojectedCornerInWideFov.w;
+                    reprojectedCornerInWideFov.x =
+                        (reprojectedCornerInWideFov.x + 1.0f) * 0.5f * quadSet.getSize().x;
+                    reprojectedCornerInWideFov.y =
+                        (reprojectedCornerInWideFov.y + 1.0f) * 0.5f * quadSet.getSize().y;
+                    overlapCornersInWideFov[i] = glm::vec2(reprojectedCornerInWideFov);
+                }
+
+                for (int i = 0; i < 4; ++i) {
+                    const glm::vec2 originalWideFovCorner = overlapCornersInWideFov[i];
+                    const bool xInRange =
+                        originalWideFovCorner.x >= normalViewRectMin.x
+                        && originalWideFovCorner.x <= normalViewRectMax.x;
+                    const bool yInRange =
+                        originalWideFovCorner.y >= normalViewRectMin.y
+                        && originalWideFovCorner.y <= normalViewRectMax.y;
+
+                    if (!xInRange && !yInRange) {
+                        continue;
+                    }
+
+                    const glm::vec2 deltaInNormalView =
+                        quadWindowCorners[i] - overlapCornersInNormalView[i];
+                    if (xInRange) {
+                        overlapCornersInWideFov[i].x =
+                            normalViewCornersInWideFoVImage[i].x + deltaInNormalView.x;
+                    }
+                    if (yInRange) {
+                        overlapCornersInWideFov[i].y =
+                            normalViewCornersInWideFoVImage[i].y + deltaInNormalView.y;
+                    }
+                }
+
+                quadMaskShader.setVec2("uCorners[0]", overlapCornersInWideFov[0]);
+                quadMaskShader.setVec2("uCorners[1]", overlapCornersInWideFov[1]);
+                quadMaskShader.setVec2("uCorners[2]", overlapCornersInWideFov[2]);
+                quadMaskShader.setVec2("uCorners[3]", overlapCornersInWideFov[3]);
+                quadMaskQuad.draw();
+            }
 
             remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
             remoteRenderer.pipeline.stencilState.stencilRef = 0;

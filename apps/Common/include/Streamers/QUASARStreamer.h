@@ -198,7 +198,8 @@ public:
         bool createResidualFrame = false,
         bool showNormals = false,
         bool showDepth = false,
-        const glm::mat4* wideFovGroundTruthView = nullptr);
+        const glm::mat4* wideFovGroundTruthView = nullptr,
+        const std::vector<glm::mat4>* wideFovOverlapTargetViews = nullptr);
     void sendFrame(PoseReceiver::PoseInfo poseInfo, bool createResidualFrame);
 
     void setDrawState(QuadMesh::DrawState drawState);

@@ -154,6 +154,19 @@ glm::mat4 buildViewMatrixFromRecordedPose(
     return poseCamera.getViewMatrix();
 }
 
+std::vector<double> parseMillisecondsList(const std::string& value) {
+    std::vector<double> values;
+    std::stringstream stream(value);
+    std::string token;
+    while (std::getline(stream, token, ',')) {
+        if (token.empty()) {
+            continue;
+        }
+        values.push_back(std::stod(token));
+    }
+    return values;
+}
+
 struct PoseCsvInfo {
     glm::vec3 position{0.0f};
     glm::quat rotationQuat{1.0f, 0.0f, 0.0f, 0.0f};
@@ -239,6 +252,12 @@ int main(int argc, char** argv) {
         "use-wide-fov-ground-truth",
         "Wide-FOV reprojection uses local (client) view as current pose instead of predicted remote pose",
         {"use-wide-fov-ground-truth"});
+    args::ValueFlag<std::string> wideFovOverlapPredictionMsIn(
+        parser,
+        "ms-list",
+        "Comma-separated prediction horizons, in ms, whose reprojection footprints are unioned for the wide-FOV layer stencil mask (example: 5,11,16)",
+        {"wide-fov-overlap-prediction-ms"},
+        "");
     // args::ValueFlag<std::string> EIn(parser, "E", "Path to E's size for each depth peeling call", {'E', "E-path"}, "");
     
     try {
@@ -374,11 +393,23 @@ int main(int argc, char** argv) {
     bool useWideFovGroundTruth = args::get(useWideFovGroundTruthIn);
     const auto wideFovGroundTruthPoseRecords =
         loadWideFovGroundTruthPoseRecords(kWideFovGroundTruthPoseRecordsPath);
+    const std::vector<double> wideFovOverlapPredictionMs =
+        parseMillisecondsList(args::get(wideFovOverlapPredictionMsIn));
 
     spdlog::info("Wide FOV Update Period Frames: {}", wideFovUpdatePeriodFrames);
     spdlog::info("Trim Wide FOV: {}", trimWideFov ? "Enabled" : "Disabled");
     spdlog::info("Wide FOV Mask Method: {}", wideFovMaskMethodToString(wideFovMaskMethod));
     spdlog::info("Use Wide FOV Ground Truth: {}", useWideFovGroundTruth ? "Enabled" : "Disabled");
+    if (!wideFovOverlapPredictionMs.empty()) {
+        std::ostringstream horizons;
+        for (size_t i = 0; i < wideFovOverlapPredictionMs.size(); ++i) {
+            if (i > 0) {
+                horizons << ",";
+            }
+            horizons << wideFovOverlapPredictionMs[i];
+        }
+        spdlog::info("Wide-FOV overlap prediction horizons: [{}] ms", horizons.str());
+    }
 
     //
     std::string wideFovDumpDir = args::get(wideFovDumpDirIn);
@@ -859,6 +890,19 @@ int main(int argc, char** argv) {
             // "Send" pose to the server. this will wait until latency+/-jitter ms have passed
             spdlog::info("Send pose to server: {}, {}, {}", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
             poseSendRecvSimulator.sendPose(camera, now);
+            std::vector<glm::mat4> wideFovOverlapTargetViews;
+            if (!wideFovOverlapPredictionMs.empty()) {
+                const std::vector<Pose> predictedWideFovPoses =
+                    poseSendRecvSimulator.predictFuturePosesFromLatestHistory(wideFovOverlapPredictionMs);
+                wideFovOverlapTargetViews.reserve(predictedWideFovPoses.size());
+                for (const Pose& predictedWideFovPose : predictedWideFovPoses) {
+                    wideFovOverlapTargetViews.push_back(predictedWideFovPose.mono.view);
+                }
+                spdlog::info(
+                    "Prepared {} wide-FOV overlap target poses from {} requested horizons",
+                    wideFovOverlapTargetViews.size(),
+                    wideFovOverlapPredictionMs.size());
+            }
             if (!preventCopyingLocalPose) {
                 // "Receive" a predicted pose to render a new frame. this will wait until latency+/-jitter ms have passed
                 Pose clientPosePred;
@@ -944,7 +988,8 @@ int main(int argc, char** argv) {
                 sendResidualFrame,
                 showNormals,
                 showDepth,
-                wideFovGroundTruthView);
+                wideFovGroundTruthView,
+                wideFovOverlapTargetViews.empty() ? nullptr : &wideFovOverlapTargetViews);
             quasar.sendFrame(PoseReceiver::PoseInfo{0, 0, 0}, sendResidualFrame);
 
             std::string frameType = sendReferenceFrame ? "Reference Frame" : "Residual Frame";

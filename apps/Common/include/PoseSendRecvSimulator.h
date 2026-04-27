@@ -60,6 +60,7 @@ public:
         const Pose& previous,
         const Pose& secondPrevious,
         double targetFutureTimeS);
+    std::vector<Pose> predictFuturePosesFromLatestHistory(const std::vector<double>& intervalsMs);
 
     void accumulateError(const PerspectiveCamera& camera, const PerspectiveCamera& remoteCamera);
     ErrorStats getAvgErrors();

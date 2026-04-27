@@ -127,6 +127,34 @@ bool PoseSendRecvSimulator::predictPose(
     return getPosePredicted(predictedPose, latest, previous, secondPrevious, targetFutureTimeS);
 }
 
+std::vector<Pose> PoseSendRecvSimulator::predictFuturePosesFromLatestHistory(const std::vector<double>& intervalsMs) {
+    std::vector<Pose> predictedPoses;
+    if (outPoses.size() < 3 || intervalsMs.empty()) {
+        return predictedPoses;
+    }
+
+    const Pose& latestPose = outPoses[outPoses.size() - 1];
+    const Pose& previousPose = outPoses[outPoses.size() - 2];
+    const Pose& secondPreviousPose = outPoses[outPoses.size() - 3];
+    const double latestTimeS = timeutils::microsToSeconds(latestPose.send_timestamp);
+    const auto savedPositionHistory = positionHistory;
+    const auto savedRotationHistory = rotationHistory;
+
+    predictedPoses.reserve(intervalsMs.size());
+    for (double intervalMs : intervalsMs) {
+        Pose predictedPose;
+        const double targetTimeS = latestTimeS + timeutils::millisToSeconds(intervalMs);
+        if (getPosePredicted(predictedPose, latestPose, previousPose, secondPreviousPose, targetTimeS)) {
+            predictedPoses.push_back(predictedPose);
+        }
+    }
+
+    positionHistory = savedPositionHistory;
+    rotationHistory = savedRotationHistory;
+
+    return predictedPoses;
+}
+
 void PoseSendRecvSimulator::accumulateError(const PerspectiveCamera& camera, const PerspectiveCamera& remoteCamera) {
     float positionDiff = glm::distance(camera.getPosition(), remoteCamera.getPosition());
     glm::quat q1 = glm::normalize(camera.getRotationQuat());
