@@ -16,7 +16,7 @@ struct Config {
     bool sortTransparent = true;
     unsigned char openglMajorVersion = 4;
 #ifndef __APPLE__
-    unsigned char openglMinorVersion = 6;
+    unsigned char openglMinorVersion = 5;
 #else
     unsigned char openglMinorVersion = 1;
 #endif

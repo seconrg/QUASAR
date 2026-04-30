@@ -2,6 +2,7 @@
 #define QUASAR_SIMULATOR_H
 
 #include <deque>
+#include <array>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -49,7 +50,10 @@ inline bool tryParseWideFovMaskMethod(std::string_view value, WideFovMaskMethod&
         outMethod = WideFovMaskMethod::None;
         return true;
     }
-    if (value == "stencil" || value == "trim" || value == "trim-stencil") {
+    if (value == "stencil" || value == "trim" || value == "trim-stencil"
+        || value == "stencilwithgtpose" || value == "stencil-with-gt-pose"
+        || value == "stencil_gt_pose")
+    {
         outMethod = WideFovMaskMethod::Stencil;
         return true;
     }
@@ -82,8 +86,23 @@ struct QUASARStreamerCreateParams {
     bool trimWideFov = false;
     /// If true, \p generateFrame only honors \p wideFovGroundTruthView when it is non-null (client/true pose).
     bool useWideFovGroundTruth = false;
+    /// Directory containing wide-FOV ground-truth metadata such as remote-to-recorded frame maps.
+    std::string wideFovGroundTruthDir;
+    /// Optional direct directory containing widefov_texel_usage_<frameID>.png masks.
+    std::string wideFovTexelUsageMaskDir;
     /// If non-empty, write per-frame corner-depth datasets here.
     std::string datasetOutputDir;
+};
+
+struct WideFovReprojectionUncertainty {
+    bool enabled = false;
+    bool valid = false;
+    glm::mat4 meanViewMatrix{1.0f};
+    // Row-major 6x6 covariance for [tx, ty, tz, rx, ry, rz].
+    std::array<double, 36> poseCovariance{};
+    double confidence = 0.68;
+    float minRadiusPx = 0.0f;
+    float maxRadiusPx = 512.0f;
 };
 
 class QUASARStreamer : public DataStreamerTCP {
@@ -135,6 +154,8 @@ public:
     std::string videoURL;
     std::string proxiesURL;
     std::string wideFovImageDumpDir;
+    std::string wideFovGroundTruthDir;
+    std::string wideFovTexelUsageMaskDir;
     std::string datasetOutputDir;
 
     struct Stats {
@@ -174,6 +195,8 @@ public:
     std::string bandwidthStatsCSVFileName;
     std::ofstream cornerDepthDatasetCSVFile;
     std::string cornerDepthDatasetCSVFileName;
+    std::ofstream wideFovCornerUncertaintyCSVFile;
+    std::string wideFovCornerUncertaintyCSVFileName;
     double prevSendTimeMs = 0.0;
 
     int frameID = 0;
@@ -198,7 +221,9 @@ public:
         bool createResidualFrame = false,
         bool showNormals = false,
         bool showDepth = false,
-        const glm::mat4* wideFovGroundTruthView = nullptr);
+        const glm::mat4* wideFovGroundTruthView = nullptr,
+        const std::vector<glm::mat4>* debugWideFovMaskTargetViews = nullptr,
+        const WideFovReprojectionUncertainty* wideFovReprojectionUncertainty = nullptr);
     void sendFrame(PoseReceiver::PoseInfo poseInfo, bool createResidualFrame);
 
     void setDrawState(QuadMesh::DrawState drawState);

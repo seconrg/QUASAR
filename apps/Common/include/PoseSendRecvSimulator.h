@@ -44,6 +44,18 @@ public:
         glm::vec2 rttMeanStd;
     };
 
+    struct PredictionCovariance {
+        bool valid = false;
+        double targetFutureTimeS = 0.0;
+        double dtFutureS = 0.0;
+        // Position covariance in m^2.
+        glm::mat3 positionCovariance{0.0f};
+        // Rotation covariance in rad^2, represented in local axis-angle tangent space.
+        glm::mat3 rotationCovariance{0.0f};
+        // Row-major 6x6 covariance: [x, y, z, rot_x, rot_y, rot_z].
+        std::array<double, 36> pose6x6{};
+    };
+
     PoseSendRecvSimulator(PoseSendRecvSimulatorCreateParams params);
 
     void setNetworkLatency(double networkLatencyMs);
@@ -59,12 +71,21 @@ public:
         const Pose& latest,
         const Pose& previous,
         const Pose& secondPrevious,
-        double targetFutureTimeS);
+        double targetFutureTimeS,
+        PredictionCovariance* covariance = nullptr);
+    std::vector<Pose> samplePredictionCovariance(
+        const Pose& meanPose,
+        const PredictionCovariance& covariance,
+        size_t sampleCount = 5,
+        double confidence = 0.99,
+        double minPositionSeparationM = 0.005,
+        double minRotationSeparationDeg = 0.05) const;
 
     void accumulateError(const PerspectiveCamera& camera, const PerspectiveCamera& remoteCamera);
     ErrorStats getAvgErrors();
     void printErrors();
     const PredictionDebugInfo& getLastPredictionDebugInfo() const { return lastPredictionDebugInfo; }
+    const PredictionCovariance& getLastPredictionCovariance() const { return lastPredictionCovariance; }
 
 private:
     double networkLatencyS;
@@ -93,6 +114,7 @@ private:
     static constexpr size_t maxRotationHistorySize = 5;
 
     PredictionDebugInfo lastPredictionDebugInfo;
+    PredictionCovariance lastPredictionCovariance;
 
     glm::vec3 savitzkyGolayFilter(const std::deque<glm::vec3>& buffer);
     glm::quat averageQuaternions(const std::deque<glm::quat>& quats);
@@ -103,7 +125,8 @@ private:
     bool getPosePredicted(
         Pose& predictedPose,
         const Pose& latest, const Pose& previous, const Pose& secondPrevious,
-        double targetFutureTimeS);
+        double targetFutureTimeS,
+        PredictionCovariance* covariance = nullptr);
 };
 
 } // namespace quasar

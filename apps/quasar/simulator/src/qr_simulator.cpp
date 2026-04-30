@@ -34,6 +34,8 @@
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cmath>
 #include <deque>
 #include <fstream>
 #include <iomanip>
@@ -50,6 +52,32 @@ namespace {
 constexpr const char* kWideFovGroundTruthPoseRecordsPath =
     "/media/wuhaolu/c54fff3f-cab5-4dcf-94c3-c83855e5a9bd/quasarOutput/profileCode/imageQualityCorrelation/robot_lab/"
     "quasarTrimWithRealRender_prev_curr_pose_records.json";
+constexpr const char* kWideFovGroundTruthPoseRecordsFilename =
+    "prev_curr_pose_records.json";
+constexpr const char* kLegacyWideFovGroundTruthPoseRecordsFilename =
+    "quasarTrimWithRealRender_prev_curr_pose_records.json";
+
+std::string resolveWideFovGroundTruthPoseRecordsPath(const std::string& wideFovGroundTruthDir) {
+    if (wideFovGroundTruthDir.empty()) {
+        return std::string(kWideFovGroundTruthPoseRecordsPath);
+    }
+
+    const Path groundTruthDir(wideFovGroundTruthDir);
+    const std::vector<Path> candidatePaths = {
+        groundTruthDir / kWideFovGroundTruthPoseRecordsFilename,
+        groundTruthDir / "loggedInfo" / kWideFovGroundTruthPoseRecordsFilename,
+        groundTruthDir / kLegacyWideFovGroundTruthPoseRecordsFilename,
+        groundTruthDir / "loggedInfo" / kLegacyWideFovGroundTruthPoseRecordsFilename,
+    };
+
+    for (const Path& candidatePath : candidatePaths) {
+        if (candidatePath.exists()) {
+            return candidatePath.str();
+        }
+    }
+
+    return candidatePaths.front().str();
+}
 
 struct WideFovGroundTruthPoseRecord {
     int recordedFrameID = -1;
@@ -171,6 +199,31 @@ PoseCsvInfo extractPoseCsvInfoFromViewMatrix(const glm::mat4& viewMatrix) {
     return info;
 }
 
+float maxAbsMatrixElementDiff(const glm::mat4& a, const glm::mat4& b) {
+    float maxDiff = 0.0f;
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            maxDiff = std::max(maxDiff, std::abs(a[col][row] - b[col][row]));
+        }
+    }
+    return maxDiff;
+}
+
+double normalizeWideFovUncertaintyConfidence(double confidence) {
+    if (confidence > 1.0 && confidence <= 100.0) {
+        confidence /= 100.0;
+    }
+
+    if (std::isfinite(confidence) && confidence > 0.0 && confidence < 1.0) {
+        return confidence;
+    }
+
+    spdlog::warn(
+        "Invalid wide-FOV reprojection uncertainty confidence {}; using default confidence 0.68",
+        confidence);
+    return 0.68;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -200,6 +253,11 @@ int main(int argc, char** argv) {
     args::ValueFlag<int> wideFovPoseLagFramesIn(parser, "wide-fov-pose-lag", "Wide-FOV layer renders with camera view from this many frames ago", {'L', "wide-fov-pose-lag"}, 0);
     args::ValueFlag<int> wideFovUpdatePeriodIn(parser, "wide-fov-update-period", "Regenerate wide-FOV layer only when frameID mod N == 0 (1 = every frame)", {'K', "wide-fov-update-period"}, 1);
     args::ValueFlag<std::string> wideFovDumpDirIn(parser, "path", "Dump wide-FOV tonemapped PNG per frame to this folder (empty = off)", {"wide-fov-dump-dir"}, "");
+    args::Flag noWideFovDumpIn(
+        parser,
+        "no-wide-fov-dump",
+        "Disable the default output-path/widefov_dump PNG dump when saving images",
+        {"no-wide-fov-dump"});
     args::ValueFlag<std::string> wideFovClientColorTextureDumpDirIn(
         parser,
         "path",
@@ -231,7 +289,7 @@ int main(int argc, char** argv) {
     args::ValueFlag<std::string> wideFovMaskMethodIn(
         parser,
         "method",
-        "Wide-FOV mask method: none, stencil, or recorded-texel-usage",
+        "Wide-FOV mask method: none, stencil, stencilwithgtpose, or recorded-texel-usage",
         {"wide-fov-mask-method"},
         "");
     args::Flag useWideFovGroundTruthIn(
@@ -239,6 +297,58 @@ int main(int argc, char** argv) {
         "use-wide-fov-ground-truth",
         "Wide-FOV reprojection uses local (client) view as current pose instead of predicted remote pose",
         {"use-wide-fov-ground-truth"});
+    args::ValueFlag<std::string> wideFovGroundTruthDirIn(
+        parser,
+        "dir",
+        "Directory containing wide-FOV ground-truth metadata files",
+        {"wide-fov-ground-truth-dir"},
+        "");
+    args::ValueFlag<std::string> wideFovGroundTruthPoseRecordsIn(
+        parser,
+        "json",
+        "Path to wide-FOV ground-truth pose records JSON; overrides --wide-fov-ground-truth-dir",
+        {"wide-fov-ground-truth-pose-records"},
+        "");
+    args::ValueFlag<std::string> wideFovTexelUsageMaskDirIn(
+        parser,
+        "dir",
+        "Directory containing recorded wide-FOV texel-usage PNG masks",
+        {"wide-fov-texel-usage-mask-dir"},
+        "");
+    args::Flag wideFovReprojectionUncertaintyIn(
+        parser,
+        "wide-fov-reprojection-uncertainty",
+        "Use analytic J Sigma J^T reprojection uncertainty for the wide-FOV stencil region",
+        {"wide-fov-reprojection-uncertainty"});
+    args::ValueFlag<int> wideFovCovarianceSamplesIn(
+        parser,
+        "count",
+        "Legacy/debug: request covariance handling; pose sampling only runs with --wide-fov-covariance-debug-sampling",
+        {"wide-fov-covariance-samples"},
+        0);
+    args::Flag wideFovCovarianceDebugSamplingIn(
+        parser,
+        "wide-fov-covariance-debug-sampling",
+        "Also sample poses from predictPose covariance and union them into the wide-FOV stencil for debug/validation",
+        {"wide-fov-covariance-debug-sampling"});
+    args::ValueFlag<double> wideFovCovarianceConfidenceIn(
+        parser,
+        "confidence",
+        "Confidence level for wide-FOV reprojection uncertainty, as fraction or percentage",
+        {"wide-fov-covariance-confidence"},
+        0.68);
+    args::ValueFlag<float> wideFovUncertaintyMinRadiusIn(
+        parser,
+        "pixels",
+        "Minimum analytic reprojection uncertainty radius in pixels",
+        {"wide-fov-uncertainty-min-radius"},
+        0.0f);
+    args::ValueFlag<float> wideFovUncertaintyMaxRadiusIn(
+        parser,
+        "pixels",
+        "Maximum analytic reprojection uncertainty radius in pixels",
+        {"wide-fov-uncertainty-max-radius"},
+        512.0f);
     // args::ValueFlag<std::string> EIn(parser, "E", "Path to E's size for each depth peeling call", {'E', "E-path"}, "");
     
     try {
@@ -310,6 +420,7 @@ int main(int argc, char** argv) {
 
     int numPoses = args::get(numPosesIn);
     Path outputPath = Path(args::get(outputPathIn)); outputPath.mkdirRecursive();
+    Path loggedInfoPath = outputPath / "loggedInfo"; loggedInfoPath.mkdirRecursive();
 
     uint maxHidLayers = args::get(maxHiddenLayersIn);
     uint maxLayers = maxHidLayers + 2;
@@ -362,7 +473,7 @@ int main(int argc, char** argv) {
     if (!wideFovMaskMethodValue.empty()) {
         if (!tryParseWideFovMaskMethod(wideFovMaskMethodValue, wideFovMaskMethod)) {
             spdlog::error(
-                "Invalid wide-FOV mask method '{}'. Expected one of: none, stencil, recorded-texel-usage",
+                "Invalid wide-FOV mask method '{}'. Expected one of: none, stencil, stencilwithgtpose, recorded-texel-usage",
                 wideFovMaskMethodValue);
             return 1;
         }
@@ -371,18 +482,82 @@ int main(int argc, char** argv) {
         wideFovMaskMethod = WideFovMaskMethod::Stencil;
     }
     bool trimWideFov = wideFovMaskMethod == WideFovMaskMethod::Stencil;
-    bool useWideFovGroundTruth = args::get(useWideFovGroundTruthIn);
+    const bool wideFovMaskMethodRequestsGroundTruth =
+        wideFovMaskMethodValue == "stencilwithgtpose"
+        || wideFovMaskMethodValue == "stencil-with-gt-pose"
+        || wideFovMaskMethodValue == "stencil_gt_pose";
+    bool useWideFovGroundTruth =
+        args::get(useWideFovGroundTruthIn) || wideFovMaskMethodRequestsGroundTruth;
+    const std::string wideFovGroundTruthDir = args::get(wideFovGroundTruthDirIn);
+    std::string wideFovGroundTruthPoseRecordsPath = args::get(wideFovGroundTruthPoseRecordsIn);
+    if (wideFovGroundTruthPoseRecordsPath.empty()) {
+        wideFovGroundTruthPoseRecordsPath =
+            resolveWideFovGroundTruthPoseRecordsPath(wideFovGroundTruthDir);
+    }
+    const std::string wideFovTexelUsageMaskDir = args::get(wideFovTexelUsageMaskDirIn);
+    const bool requestedWideFovReprojectionUncertainty =
+        args::get(wideFovReprojectionUncertaintyIn) || args::get(wideFovCovarianceSamplesIn) > 0;
+    const bool requestedWideFovCovarianceDebugSampling = args::get(wideFovCovarianceDebugSamplingIn);
+    const bool suppressWideFovCovarianceForGroundTruthStencil = wideFovMaskMethodRequestsGroundTruth;
+    const bool wideFovReprojectionUncertaintyRequested =
+        requestedWideFovReprojectionUncertainty && !suppressWideFovCovarianceForGroundTruthStencil;
+    const bool wideFovCovarianceDebugSampling =
+        requestedWideFovCovarianceDebugSampling && !suppressWideFovCovarianceForGroundTruthStencil;
+    const int wideFovCovarianceSampleCountArg = args::get(wideFovCovarianceSamplesIn);
+    const size_t wideFovCovarianceSampleCount =
+        static_cast<size_t>(std::max(wideFovCovarianceSampleCountArg, 0));
+    const double wideFovCovarianceConfidence =
+        normalizeWideFovUncertaintyConfidence(args::get(wideFovCovarianceConfidenceIn));
+    const float wideFovUncertaintyMinRadiusPx = std::max(0.0f, args::get(wideFovUncertaintyMinRadiusIn));
+    const float wideFovUncertaintyMaxRadiusPx =
+        std::max(wideFovUncertaintyMinRadiusPx, args::get(wideFovUncertaintyMaxRadiusIn));
     const auto wideFovGroundTruthPoseRecords =
-        loadWideFovGroundTruthPoseRecords(kWideFovGroundTruthPoseRecordsPath);
+        loadWideFovGroundTruthPoseRecords(wideFovGroundTruthPoseRecordsPath);
 
     spdlog::info("Wide FOV Update Period Frames: {}", wideFovUpdatePeriodFrames);
     spdlog::info("Trim Wide FOV: {}", trimWideFov ? "Enabled" : "Disabled");
     spdlog::info("Wide FOV Mask Method: {}", wideFovMaskMethodToString(wideFovMaskMethod));
     spdlog::info("Use Wide FOV Ground Truth: {}", useWideFovGroundTruth ? "Enabled" : "Disabled");
+    if (useWideFovGroundTruth || !wideFovGroundTruthDir.empty()) {
+        spdlog::info("Wide FOV Ground Truth Pose Records: {}", wideFovGroundTruthPoseRecordsPath);
+    }
+    if (!wideFovGroundTruthDir.empty()) {
+        spdlog::info("Wide FOV Ground Truth Metadata Dir: {}", wideFovGroundTruthDir);
+    }
+    if (!wideFovTexelUsageMaskDir.empty()) {
+        spdlog::info("Wide FOV Texel Usage Mask Dir: {}", wideFovTexelUsageMaskDir);
+    }
+    if (suppressWideFovCovarianceForGroundTruthStencil
+        && (requestedWideFovReprojectionUncertainty || requestedWideFovCovarianceDebugSampling))
+    {
+        spdlog::info(
+            "Wide-FOV covariance uncertainty/sampling is disabled for stencilwithgtpose "
+            "so GT-pose stencil bitrate measurements are not affected");
+    }
+    if (wideFovReprojectionUncertaintyRequested) {
+        spdlog::info(
+            "Wide-FOV analytic reprojection uncertainty: confidence={:.1f}%, radius clamp=[{:.3f}, {:.3f}] px",
+            wideFovCovarianceConfidence * 100.0,
+            wideFovUncertaintyMinRadiusPx,
+            wideFovUncertaintyMaxRadiusPx);
+        if (!trimWideFov) {
+            spdlog::warn("Wide-FOV reprojection uncertainty is only applied by the stencil trim path");
+        }
+        if (wideFovCovarianceSampleCount > 0 && !wideFovCovarianceDebugSampling) {
+            spdlog::info(
+                "--wide-fov-covariance-samples now enables analytic uncertainty only; "
+                "add --wide-fov-covariance-debug-sampling to run Monte Carlo pose sampling");
+        }
+    }
+    if (wideFovCovarianceDebugSampling && wideFovCovarianceSampleCount == 0) {
+        spdlog::warn("--wide-fov-covariance-debug-sampling was set but --wide-fov-covariance-samples is 0");
+    }
 
     //
     std::string wideFovDumpDir = args::get(wideFovDumpDirIn);
-    if (wideFovDumpDir.empty()) {
+    if (args::get(noWideFovDumpIn)) {
+        wideFovDumpDir.clear();
+    } else if (wideFovDumpDir.empty()) {
         wideFovDumpDir = outputPath.str() + "/widefov_dump";
     }
 
@@ -399,23 +574,29 @@ int main(int argc, char** argv) {
             .wideFovMaskMethod = wideFovMaskMethod,
             .trimWideFov = trimWideFov,
             .useWideFovGroundTruth = useWideFovGroundTruth,
-            .datasetOutputDir = outputPath.str(),
+            .wideFovGroundTruthDir = wideFovGroundTruthDir,
+            .wideFovTexelUsageMaskDir = wideFovTexelUsageMaskDir,
+            .datasetOutputDir = loggedInfoPath.str(),
         });
 
     quasar.addMeshesToScene(localScene);
 
-    std::ofstream recvPoseToRenderFile((outputPath / "recv_pose_to_render.csv").str());
+    std::ofstream recvPoseToRenderFile((loggedInfoPath / "recv_pose_to_render.csv").str());
     recvPoseToRenderFile
-        << "recorded_frame_id,pose_timestamp_us,"
+        << "frame_id,recorded_frame_id,pose_timestamp_us,"
         << "tx,ty,tz,qx,qy,qz,qw,rx_deg,ry_deg,rz_deg" << std::endl;
-    std::ofstream predictionPoseTimestampsFile((outputPath / "pose_prediction_timestamps.csv").str());
+    std::ofstream predictionPoseTimestampsFile((loggedInfoPath / "pose_prediction_timestamps.csv").str());
     predictionPoseTimestampsFile
-        << "recorded_frame_id,prediction_used,"
+        << "frame_id,recorded_frame_id,prediction_used,"
         << "latest_pose_timestamp_us,prev_pose_timestamp_us,prev_but_two_pose_timestamp_us,predicted_pose_timestamp_us"
         << std::endl;
-    std::ofstream recordedFramePoseFile((outputPath / "recorded_frame_render_poses.csv").str());
+    std::ofstream recordedFramePoseFile((loggedInfoPath / "recorded_frame_render_poses.csv").str());
     recordedFramePoseFile
         << "recorded_frame_id,pose_timestamp_us,render_now_us,"
+        << "tx,ty,tz,qx,qy,qz,qw,rx_deg,ry_deg,rz_deg" << std::endl;
+    std::ofstream covarianceSampledPosesFile((loggedInfoPath / "widefov_covariance_sampled_poses.csv").str());
+    covarianceSampledPosesFile
+        << "name,frame_id,recorded_frame_id,sample_id,confidence,pose_timestamp_us,"
         << "tx,ty,tz,qx,qy,qz,qw,rx_deg,ry_deg,rz_deg" << std::endl;
     
 
@@ -759,7 +940,9 @@ int main(int argc, char** argv) {
     bool updateClient = !saveImages;
     int frameCounter = 0;
     PoseSendRecvSimulator::PredictionDebugInfo activePredictionDebugInfo;
+    PoseSendRecvSimulator::PredictionCovariance activePredictionCovariance;
     std::optional<Pose> activeRemoteRenderPose;
+    std::vector<Pose> activeWideFovCovarianceSamples;
 
     std::string wideFovClientColorTextureDumpDir = args::get(wideFovClientColorTextureDumpDirIn);
     std::string wideFovClientTexelUsageDumpDir;
@@ -859,6 +1042,7 @@ int main(int argc, char** argv) {
             // "Send" pose to the server. this will wait until latency+/-jitter ms have passed
             spdlog::info("Send pose to server: {}, {}, {}", camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
             poseSendRecvSimulator.sendPose(camera, now);
+            bool receivedRemotePoseThisFrame = false;
             if (!preventCopyingLocalPose) {
                 // "Receive" a predicted pose to render a new frame. this will wait until latency+/-jitter ms have passed
                 Pose clientPosePred;
@@ -866,6 +1050,8 @@ int main(int argc, char** argv) {
                     remoteCamera.setViewMatrix(clientPosePred.mono.view);
                     activeRemoteRenderPose = clientPosePred;
                     activePredictionDebugInfo = poseSendRecvSimulator.getLastPredictionDebugInfo();
+                    activePredictionCovariance = poseSendRecvSimulator.getLastPredictionCovariance();
+                    receivedRemotePoseThisFrame = true;
                 }
                 spdlog::info("Remote Render with pose: {}, {}, {}", remoteCamera.getPosition().x, remoteCamera.getPosition().y, remoteCamera.getPosition().z);
                 // If we do not have a new pose, just send a new frame with the old pose
@@ -893,9 +1079,135 @@ int main(int argc, char** argv) {
 
             const glm::mat4* wideFovGroundTruthView = nullptr;
             glm::mat4 nextPoseViewMatrix(1.0f);
+            WideFovReprojectionUncertainty wideFovReprojectionUncertainty;
+            std::vector<glm::mat4> debugWideFovCovarianceMaskTargetViews;
+            activeWideFovCovarianceSamples.clear();
+            const int nextQuasarRemoteFrameID = quasar.frameID + 1;
+            const glm::mat4 remoteRenderViewMatrix = remoteCamera.getViewMatrix();
+            const PoseCsvInfo remoteRenderPoseInfo = extractPoseCsvInfoFromViewMatrix(remoteRenderViewMatrix);
+            int mappedRecordedFrameID = -1;
+            if (wideFovGroundTruthPoseRecords.has_value()) {
+                const auto recordIt = wideFovGroundTruthPoseRecords->find(nextQuasarRemoteFrameID);
+                if (recordIt != wideFovGroundTruthPoseRecords->end()) {
+                    mappedRecordedFrameID = recordIt->second.recordedFrameID;
+                }
+            }
+            if (wideFovReprojectionUncertaintyRequested
+                && receivedRemotePoseThisFrame
+                && activeRemoteRenderPose.has_value()
+                && activePredictionCovariance.valid)
+            {
+                const PoseCsvInfo covarianceCenterPoseInfo =
+                    extractPoseCsvInfoFromViewMatrix(activeRemoteRenderPose->mono.view);
+                const float covarianceCenterViewMatrixMaxDiff =
+                    maxAbsMatrixElementDiff(remoteRenderViewMatrix, activeRemoteRenderPose->mono.view);
+                const glm::quat remoteRotationForDiff = glm::normalize(glm::quat_cast(
+                    glm::mat3(glm::inverse(remoteRenderViewMatrix))));
+                glm::quat centerRotationForDiff = glm::normalize(glm::quat_cast(
+                    glm::mat3(glm::inverse(activeRemoteRenderPose->mono.view))));
+                if (glm::dot(remoteRotationForDiff, centerRotationForDiff) < 0.0f) {
+                    centerRotationForDiff = -centerRotationForDiff;
+                }
+                const float covarianceCenterPositionDiffM = glm::distance(
+                    remoteRenderPoseInfo.position,
+                    covarianceCenterPoseInfo.position);
+                const float covarianceCenterRotationDiffDeg = glm::degrees(
+                    2.0f * std::acos(glm::clamp(
+                        glm::dot(remoteRotationForDiff, centerRotationForDiff),
+                        -1.0f,
+                        1.0f)));
+                spdlog::info(
+                    "Covariance center check frame {}: remote-render pos=({}, {}, {}), rot=({}, {}, {}); "
+                    "uncertainty-center pos=({}, {}, {}), rot=({}, {}, {}); diff=({:.9f}m, {:.9f}deg, {:.9e} matrix)",
+                    nextQuasarRemoteFrameID,
+                    remoteRenderPoseInfo.position.x,
+                    remoteRenderPoseInfo.position.y,
+                    remoteRenderPoseInfo.position.z,
+                    remoteRenderPoseInfo.eulerRotationDegrees.x,
+                    remoteRenderPoseInfo.eulerRotationDegrees.y,
+                    remoteRenderPoseInfo.eulerRotationDegrees.z,
+                    covarianceCenterPoseInfo.position.x,
+                    covarianceCenterPoseInfo.position.y,
+                    covarianceCenterPoseInfo.position.z,
+                    covarianceCenterPoseInfo.eulerRotationDegrees.x,
+                    covarianceCenterPoseInfo.eulerRotationDegrees.y,
+                    covarianceCenterPoseInfo.eulerRotationDegrees.z,
+                    covarianceCenterPositionDiffM,
+                    covarianceCenterRotationDiffDeg,
+                    covarianceCenterViewMatrixMaxDiff);
+                if (covarianceCenterPositionDiffM > 1e-5f || covarianceCenterViewMatrixMaxDiff > 1e-5f) {
+                    spdlog::warn(
+                        "Covariance uncertainty center does not match remote render pose on frame {}",
+                        nextQuasarRemoteFrameID);
+                }
+
+                wideFovReprojectionUncertainty.enabled = true;
+                wideFovReprojectionUncertainty.valid = true;
+                wideFovReprojectionUncertainty.meanViewMatrix = activeRemoteRenderPose->mono.view;
+                wideFovReprojectionUncertainty.poseCovariance = activePredictionCovariance.pose6x6;
+                wideFovReprojectionUncertainty.confidence = wideFovCovarianceConfidence;
+                wideFovReprojectionUncertainty.minRadiusPx = wideFovUncertaintyMinRadiusPx;
+                wideFovReprojectionUncertainty.maxRadiusPx = wideFovUncertaintyMaxRadiusPx;
+
+                if (wideFovCovarianceDebugSampling && wideFovCovarianceSampleCount > 0) {
+                    debugWideFovCovarianceMaskTargetViews.push_back(activeRemoteRenderPose->mono.view);
+                    activeWideFovCovarianceSamples = poseSendRecvSimulator.samplePredictionCovariance(
+                        *activeRemoteRenderPose,
+                        activePredictionCovariance,
+                        wideFovCovarianceSampleCount,
+                        wideFovCovarianceConfidence);
+                    for (const Pose& sampledPose : activeWideFovCovarianceSamples) {
+                        debugWideFovCovarianceMaskTargetViews.push_back(sampledPose.mono.view);
+                    }
+                }
+                spdlog::info(
+                    "Prepared analytic wide-FOV reprojection uncertainty for frame {}{}",
+                    nextQuasarRemoteFrameID,
+                    activeWideFovCovarianceSamples.empty()
+                        ? ""
+                        : " with debug Monte Carlo covariance samples");
+            }
+
+            predictionPoseTimestampsFile
+                << nextQuasarRemoteFrameID << ","
+                << mappedRecordedFrameID << ","
+                << (activePredictionDebugInfo.usedPrediction ? 1 : 0) << ","
+                << activePredictionDebugInfo.latestTimestampUs << ","
+                << activePredictionDebugInfo.previousTimestampUs << ","
+                << activePredictionDebugInfo.secondPreviousTimestampUs << ","
+                << activePredictionDebugInfo.predictedTimestampUs
+                << std::endl;
+
+            recvPoseToRenderFile
+                << nextQuasarRemoteFrameID << ","
+                << mappedRecordedFrameID << ","
+                << (activeRemoteRenderPose.has_value() ? static_cast<int64_t>(activeRemoteRenderPose->send_timestamp) : -1) << ","
+                << remoteRenderPoseInfo.position.x << "," << remoteRenderPoseInfo.position.y << "," << remoteRenderPoseInfo.position.z << ","
+                << remoteRenderPoseInfo.rotationQuat.x << "," << remoteRenderPoseInfo.rotationQuat.y << ","
+                << remoteRenderPoseInfo.rotationQuat.z << "," << remoteRenderPoseInfo.rotationQuat.w << ","
+                << remoteRenderPoseInfo.eulerRotationDegrees.x << "," << remoteRenderPoseInfo.eulerRotationDegrees.y << ","
+                << remoteRenderPoseInfo.eulerRotationDegrees.z
+                << std::endl;
+
+            for (size_t sampleIndex = 0; sampleIndex < activeWideFovCovarianceSamples.size(); ++sampleIndex) {
+                const Pose& sampledPose = activeWideFovCovarianceSamples[sampleIndex];
+                const PoseCsvInfo sampledPoseInfo = extractPoseCsvInfoFromViewMatrix(sampledPose.mono.view);
+                covarianceSampledPosesFile
+                    << "frame_id_" << nextQuasarRemoteFrameID << "_sample_" << sampleIndex << ","
+                    << nextQuasarRemoteFrameID << ","
+                    << mappedRecordedFrameID << ","
+                    << sampleIndex << ","
+                    << wideFovCovarianceConfidence << ","
+                    << static_cast<int64_t>(sampledPose.send_timestamp) << ","
+                    << sampledPoseInfo.position.x << "," << sampledPoseInfo.position.y << "," << sampledPoseInfo.position.z << ","
+                    << sampledPoseInfo.rotationQuat.x << "," << sampledPoseInfo.rotationQuat.y << ","
+                    << sampledPoseInfo.rotationQuat.z << "," << sampledPoseInfo.rotationQuat.w << ","
+                    << sampledPoseInfo.eulerRotationDegrees.x << "," << sampledPoseInfo.eulerRotationDegrees.y << ","
+                    << sampledPoseInfo.eulerRotationDegrees.z
+                    << std::endl;
+            }
 
             if (useWideFovGroundTruth) {
-                const int nextQuasarRemoteFrameID = quasar.frameID + 1;
                 bool foundRecordedPoseForRemoteFrame = false;
 
                 if (wideFovGroundTruthPoseRecords.has_value()) {
@@ -944,7 +1256,9 @@ int main(int argc, char** argv) {
                 sendResidualFrame,
                 showNormals,
                 showDepth,
-                wideFovGroundTruthView);
+                wideFovGroundTruthView,
+                debugWideFovCovarianceMaskTargetViews.empty() ? nullptr : &debugWideFovCovarianceMaskTargetViews,
+                wideFovReprojectionUncertainty.valid ? &wideFovReprojectionUncertainty : nullptr);
             quasar.sendFrame(PoseReceiver::PoseInfo{0, 0, 0}, sendResidualFrame);
 
             std::string frameType = sendReferenceFrame ? "Reference Frame" : "Residual Frame";
@@ -1076,15 +1390,6 @@ int main(int argc, char** argv) {
         poseSendRecvSimulator.accumulateError(camera, remoteCamera);
 
         auto dumpPosePredictionAndRecordedPoseCsvRows = [&](int recordedFrameID) {
-            predictionPoseTimestampsFile
-                << recordedFrameID << ","
-                << (activePredictionDebugInfo.usedPrediction ? 1 : 0) << ","
-                << activePredictionDebugInfo.latestTimestampUs << ","
-                << activePredictionDebugInfo.previousTimestampUs << ","
-                << activePredictionDebugInfo.secondPreviousTimestampUs << ","
-                << activePredictionDebugInfo.predictedTimestampUs
-                << std::endl;
-
             const glm::quat recordedFrameRotationQuat = glm::normalize(camera.getRotationQuat());
             const int64_t recordedPoseTimestampUs = static_cast<int64_t>(timeutils::secondsToMicros(camera.getTimestamp()));
             const int64_t renderNowTimestampUs = static_cast<int64_t>(timeutils::secondsToMicros(now));
@@ -1099,28 +1404,6 @@ int main(int argc, char** argv) {
                 << recordedFrameRotationQuat.z << "," << recordedFrameRotationQuat.w << ","
                 << recordedFrameEuler.x << "," << recordedFrameEuler.y << "," << recordedFrameEuler.z
                 << std::endl;
-
-            if (activeRemoteRenderPose.has_value()) {
-                const PoseCsvInfo remoteRenderPoseInfo = extractPoseCsvInfoFromViewMatrix(activeRemoteRenderPose->mono.view);
-                recvPoseToRenderFile
-                    << recordedFrameID << ","
-                    << static_cast<int64_t>(activeRemoteRenderPose->send_timestamp) << ","
-                    << remoteRenderPoseInfo.position.x << "," << remoteRenderPoseInfo.position.y << "," << remoteRenderPoseInfo.position.z << ","
-                    << remoteRenderPoseInfo.rotationQuat.x << "," << remoteRenderPoseInfo.rotationQuat.y << ","
-                    << remoteRenderPoseInfo.rotationQuat.z << "," << remoteRenderPoseInfo.rotationQuat.w << ","
-                    << remoteRenderPoseInfo.eulerRotationDegrees.x << "," << remoteRenderPoseInfo.eulerRotationDegrees.y << ","
-                    << remoteRenderPoseInfo.eulerRotationDegrees.z
-                    << std::endl;
-            }
-            else {
-                recvPoseToRenderFile
-                    << recordedFrameID << ","
-                    << -1 << ","
-                    << -1 << "," << -1 << "," << -1 << ","
-                    << -1 << "," << -1 << "," << -1 << "," << -1 << ","
-                    << -1 << "," << -1 << "," << -1
-                    << std::endl;
-            }
         };
 
         if (cameraPathFileIn) {

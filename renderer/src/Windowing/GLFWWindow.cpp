@@ -4,12 +4,36 @@
 
 #include <Windowing/GLFWWindow.h>
 
+#include <stdexcept>
+#include <string>
+
 using namespace quasar;
 
+namespace {
+
+std::string lastGlfwError;
+
+void glfwErrorCallback(int error, const char* description) {
+    lastGlfwError = std::to_string(error);
+    if (description != nullptr) {
+        lastGlfwError += ": ";
+        lastGlfwError += description;
+    }
+    spdlog::error("GLFW error {}", lastGlfwError);
+}
+
+std::string glfwErrorSuffix() {
+    return lastGlfwError.empty() ? std::string{} : " (" + lastGlfwError + ")";
+}
+
+} // namespace
+
 GLFWWindow::GLFWWindow(const Config& config) {
+    lastGlfwError.clear();
+    glfwSetErrorCallback(glfwErrorCallback);
+
     if (!glfwInit()) {
-        throw std::runtime_error("Failed to initialize GLFW");
-        return;
+        throw std::runtime_error("Failed to initialize GLFW" + glfwErrorSuffix());
     }
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, config.openglMajorVersion);
@@ -27,9 +51,8 @@ GLFWWindow::GLFWWindow(const Config& config) {
 
     window = glfwCreateWindow(config.width, config.height, config.title.c_str(), nullptr, nullptr);
     if (window == nullptr) {
-        throw std::runtime_error("Failed to create GLFW window");
         glfwTerminate();
-        return;
+        throw std::runtime_error("Failed to create GLFW window" + glfwErrorSuffix());
     }
 
     glfwMakeContextCurrent(window);

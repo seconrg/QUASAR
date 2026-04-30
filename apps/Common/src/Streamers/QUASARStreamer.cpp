@@ -5,6 +5,7 @@
 #include <Utils/FileIO.h>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -29,6 +30,13 @@ constexpr const char* kWideFovTexelUsageRoot =
 constexpr const char* kRemoteToRecordedFrameMapCsv =
     "/media/wuhaolu/c54fff3f-cab5-4dcf-94c3-c83855e5a9bd/quasarOutput/profileCode/imageQualityCorrelation/robot_lab/"
     "quasarTrimWithMaskGT_remote_to_recorded_frame_map.csv";
+constexpr const char* kRemoteToRecordedFrameMapFilename =
+    "quasarTrimWithMaskGT_remote_to_recorded_frame_map.csv";
+constexpr const char* kRecvPoseToRenderFilename = "recv_pose_to_render.csv";
+constexpr const char* kWideFovGroundTruthPoseRecordsFilename =
+    "prev_curr_pose_records.json";
+constexpr const char* kLegacyWideFovGroundTruthPoseRecordsFilename =
+    "quasarTrimWithRealRender_prev_curr_pose_records.json";
 
 struct RecordedWideFovMaskFrame {
     int recordedFrameID = -1;
@@ -60,6 +68,17 @@ struct PoseDebugInfo {
     glm::vec3 rotationDegrees{0.0f};
 };
 
+struct CornerUncertaintyInfo {
+    bool valid = false;
+    glm::vec3 cameraPoint{0.0f};
+    double sigmaU00 = 0.0;
+    double sigmaU01 = 0.0;
+    double sigmaU11 = 0.0;
+    double lambdaMax = 0.0;
+    double unclampedRadiusPx = 0.0;
+    float radiusPx = 0.0f;
+};
+
 /// Shoelace area for quad vertex order (0,1), (1,3), (3,2), (2,0) — matches quad_mask.vert triangle strip.
 double narrowReprojectionQuadAreaPx2(const glm::vec3 c[4]) {
     const glm::vec2 v[4] = {
@@ -76,6 +95,173 @@ double narrowReprojectionQuadAreaPx2(const glm::vec3 c[4]) {
 
 constexpr float kPoseOnlyReprojectionMinDenominator = 1e-4f;
 constexpr size_t kMinReliableTrimmedWideFovAlphaTexels = 10000u;
+constexpr double kWideFovChi2Confidence68 = 2.30;
+constexpr double kWideFovChi2Confidence95 = 5.99;
+constexpr double kWideFovChi2Confidence99 = 9.21;
+constexpr double kWideFovUncertaintyZEpsilon = 1e-5;
+
+double chi2ForWideFovConfidence(double confidence) {
+    if (confidence > 1.0 && confidence <= 100.0) {
+        confidence /= 100.0;
+    }
+
+    if (std::abs(confidence - 0.68) < 0.02 || std::abs(confidence - 68.0) < 0.5) {
+        return kWideFovChi2Confidence68;
+    }
+    if (std::abs(confidence - 0.95) < 0.02 || std::abs(confidence - 95.0) < 0.5) {
+        return kWideFovChi2Confidence95;
+    }
+    if (std::abs(confidence - 0.99) < 0.01 || std::abs(confidence - 99.0) < 0.5) {
+        return kWideFovChi2Confidence99;
+    }
+
+    if (std::isfinite(confidence) && confidence > 0.0 && confidence < 1.0) {
+        return -2.0 * std::log(1.0 - confidence);
+    }
+
+    spdlog::warn(
+        "Invalid wide-FOV reprojection confidence {}; defaulting to 68% chi2={}",
+        confidence,
+        kWideFovChi2Confidence68);
+    return kWideFovChi2Confidence68;
+}
+
+std::array<double, 36> transformPoseCovarianceToCameraFrame(
+    const std::array<double, 36>& poseCovariance,
+    const glm::mat4& viewMatrix)
+{
+    double transform[6][6] = {};
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            const double value = static_cast<double>(viewMatrix[col][row]);
+            transform[row][col] = value;
+            transform[row + 3][col + 3] = value;
+        }
+    }
+
+    std::array<double, 36> transformed{};
+    for (int row = 0; row < 6; ++row) {
+        for (int col = 0; col < 6; ++col) {
+            double value = 0.0;
+            for (int k = 0; k < 6; ++k) {
+                for (int l = 0; l < 6; ++l) {
+                    value += transform[row][k] * poseCovariance[k * 6 + l] * transform[col][l];
+                }
+            }
+            transformed[row * 6 + col] = value;
+        }
+    }
+    return transformed;
+}
+
+CornerUncertaintyInfo computeCornerReprojectionUncertainty(
+    const glm::vec4& cornerInWorld,
+    const glm::mat4& targetViewMatrix,
+    const glm::mat4& projectionMatrix,
+    const glm::uvec2& imageSize,
+    const std::array<double, 36>& poseCovarianceCameraFrame,
+    double chi2Threshold,
+    float minRadiusPx,
+    float maxRadiusPx)
+{
+    CornerUncertaintyInfo info;
+    if (imageSize.x == 0u || imageSize.y == 0u || minRadiusPx > maxRadiusPx) {
+        return info;
+    }
+
+    const glm::dvec4 cameraPointGL = glm::dmat4(targetViewMatrix) * glm::dvec4(cornerInWorld);
+    const double x = cameraPointGL.x;
+    const double y = cameraPointGL.y;
+    const double z = -cameraPointGL.z;
+    info.cameraPoint = glm::vec3(
+        static_cast<float>(x),
+        static_cast<float>(y),
+        static_cast<float>(z));
+
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || z <= kWideFovUncertaintyZEpsilon) {
+        return info;
+    }
+
+    const double fx = std::abs(static_cast<double>(projectionMatrix[0][0]))
+        * static_cast<double>(imageSize.x) * 0.5;
+    const double fy = std::abs(static_cast<double>(projectionMatrix[1][1]))
+        * static_cast<double>(imageSize.y) * 0.5;
+    if (!std::isfinite(fx) || !std::isfinite(fy) || fx <= 0.0 || fy <= 0.0) {
+        return info;
+    }
+
+    const double z2 = z * z;
+    const double jacobian[2][6] = {
+        {
+            fx / z,
+            0.0,
+            -fx * x / z2,
+            -fx * x * y / z2,
+            fx + fx * x * x / z2,
+            -fx * y / z,
+        },
+        {
+            0.0,
+            fy / z,
+            -fy * y / z2,
+            -fy - fy * y * y / z2,
+            fy * x * y / z2,
+            fy * x / z,
+        },
+    };
+
+    double sigmaU[2][2] = {};
+    for (int outRow = 0; outRow < 2; ++outRow) {
+        for (int outCol = 0; outCol < 2; ++outCol) {
+            double value = 0.0;
+            for (int poseRow = 0; poseRow < 6; ++poseRow) {
+                for (int poseCol = 0; poseCol < 6; ++poseCol) {
+                    value += jacobian[outRow][poseRow]
+                        * poseCovarianceCameraFrame[poseRow * 6 + poseCol]
+                        * jacobian[outCol][poseCol];
+                }
+            }
+            sigmaU[outRow][outCol] = value;
+        }
+    }
+
+    const double a = sigmaU[0][0];
+    const double b = 0.5 * (sigmaU[0][1] + sigmaU[1][0]);
+    const double c = sigmaU[1][1];
+    const double trace = a + c;
+    const double det = a * c - b * b;
+    const double discriminant = std::max(0.0, trace * trace - 4.0 * det);
+    const double lambdaMax = std::max(0.0, 0.5 * (trace + std::sqrt(discriminant)));
+    const double unclampedRadius = std::sqrt(std::max(0.0, chi2Threshold * lambdaMax));
+    if (!std::isfinite(unclampedRadius)) {
+        return info;
+    }
+
+    info.valid = true;
+    info.sigmaU00 = a;
+    info.sigmaU01 = b;
+    info.sigmaU11 = c;
+    info.lambdaMax = lambdaMax;
+    info.unclampedRadiusPx = unclampedRadius;
+    info.radiusPx = std::clamp(static_cast<float>(unclampedRadius), minRadiusPx, maxRadiusPx);
+    return info;
+}
+
+void expandCornerQuadByUncertainty(glm::vec2 corners[4], const CornerUncertaintyInfo uncertainty[4]) {
+    const glm::vec2 signs[4] = {
+        glm::vec2(-1.0f, -1.0f),
+        glm::vec2(1.0f, -1.0f),
+        glm::vec2(-1.0f, 1.0f),
+        glm::vec2(1.0f, 1.0f),
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        if (!uncertainty[i].valid || uncertainty[i].radiusPx <= 0.0f) {
+            continue;
+        }
+        corners[i] += signs[i] * uncertainty[i].radiusPx;
+    }
+}
 
 float decodePackedProxyDepth(uint32_t normalAndDepthPacked) {
     return static_cast<float>(normalAndDepthPacked & 0xFFFFu) / 65535.0f;
@@ -428,12 +614,24 @@ Path getReprojectionMaskCompareDir(const std::string& wideFovImageDumpDir) {
     return Path(getOutputDirFromWideFovDumpDir(wideFovImageDumpDir)) / "reprojection_mask_compare";
 }
 
+Path getLoggedInfoDirFromWideFovDumpDir(const std::string& wideFovImageDumpDir) {
+    return Path(getOutputDirFromWideFovDumpDir(wideFovImageDumpDir)) / "loggedInfo";
+}
+
+Path getReprojectionMaskCompareLoggedInfoDir(const std::string& wideFovImageDumpDir) {
+    return getLoggedInfoDirFromWideFovDumpDir(wideFovImageDumpDir) / "reprojection_mask_compare";
+}
+
 Path getTrimWideFovTimewarpDebugDir(const std::string& wideFovImageDumpDir) {
     return Path(getOutputDirFromWideFovDumpDir(wideFovImageDumpDir)) / "trim_widefov_timewarp_debug";
 }
 
 Path getTrimWideFovAtwDebugDir(const std::string& wideFovImageDumpDir) {
     return Path(getOutputDirFromWideFovDumpDir(wideFovImageDumpDir)) / "trim_widefov_atw_debug";
+}
+
+Path getTrimWideFovAtwDebugLoggedInfoDir(const std::string& wideFovImageDumpDir) {
+    return getLoggedInfoDirFromWideFovDumpDir(wideFovImageDumpDir) / "trim_widefov_atw_debug";
 }
 
 glm::vec3 clampImagePointToViewport(const glm::vec3& imagePoint, float viewportWidth, float viewportHeight) {
@@ -622,7 +820,9 @@ void dumpTrimWideFovAtwReprojectionDebug(
 
     const PoseDebugInfo sourcePose = extractPoseDebugInfo(sourceViewMatrix);
     const PoseDebugInfo targetPose = extractPoseDebugInfo(targetViewMatrix);
-    const Path poseCsvPath = dumpDir / "pose_pairs.csv";
+    Path infoDir = getTrimWideFovAtwDebugLoggedInfoDir(wideFovImageDumpDir);
+    infoDir.mkdirRecursive();
+    const Path poseCsvPath = infoDir / "pose_pairs.csv";
     const bool shouldWriteHeader = !poseCsvPath.exists();
     std::ofstream poseCsv(poseCsvPath.str(), std::ios::app);
     if (shouldWriteHeader) {
@@ -656,7 +856,7 @@ void dumpTrimWideFovAtwReprojectionDebug(
 
     const std::string frameSuffix = std::to_string(frameID);
     sourceRT.writeColorAsPNG((dumpDir / ("source_frame_" + frameSuffix + ".png")).str());
-    outputRT.writeColorAsPNG((dumpDir / ("warped_to_effectiveWideFovGt_" + frameSuffix + ".png")).str());
+    outputRT.writeColorAsPNG((dumpDir / ("warped_to_target_view_" + frameSuffix + ".png")).str());
 }
 
 void dumpReprojectionMaskComparison(
@@ -732,7 +932,9 @@ void dumpReprojectionMaskComparison(
         3,
         overlayRgb.data());
 
-    std::ofstream posePairsCsv((dumpDir / "pose_pairs.csv").str(), std::ios::app);
+    Path infoDir = getReprojectionMaskCompareLoggedInfoDir(wideFovImageDumpDir);
+    infoDir.mkdirRecursive();
+    std::ofstream posePairsCsv((infoDir / "pose_pairs.csv").str(), std::ios::app);
     posePairsCsv << frameID << ","
                  << previousPose.position.x << "," << previousPose.position.y << "," << previousPose.position.z << ","
                  << previousPose.rotationDegrees.x << "," << previousPose.rotationDegrees.y << "," << previousPose.rotationDegrees.z << ","
@@ -774,18 +976,38 @@ std::vector<std::string> splitCSVLine(const std::string& line) {
     return fields;
 }
 
-RemoteToRecordedFrameMap loadRemoteToRecordedFrameMap() {
+std::vector<std::string> resolveRemoteToRecordedFrameMapCandidates(
+    const std::string& wideFovGroundTruthDir)
+{
+    if (!wideFovGroundTruthDir.empty()) {
+        const Path groundTruthDir(wideFovGroundTruthDir);
+        const Path loggedInfoDir = groundTruthDir / "loggedInfo";
+        return {
+            (groundTruthDir / kWideFovGroundTruthPoseRecordsFilename).str(),
+            (loggedInfoDir / kWideFovGroundTruthPoseRecordsFilename).str(),
+            (groundTruthDir / kLegacyWideFovGroundTruthPoseRecordsFilename).str(),
+            (loggedInfoDir / kLegacyWideFovGroundTruthPoseRecordsFilename).str(),
+            (groundTruthDir / kRemoteToRecordedFrameMapFilename).str(),
+            (loggedInfoDir / kRemoteToRecordedFrameMapFilename).str(),
+            (groundTruthDir / kRecvPoseToRenderFilename).str(),
+            (loggedInfoDir / kRecvPoseToRenderFilename).str(),
+        };
+    }
+    return { kRemoteToRecordedFrameMapCsv };
+}
+
+RemoteToRecordedFrameMap loadRemoteToRecordedFrameMap(const std::string& csvPath) {
     RemoteToRecordedFrameMap remoteToRecordedFrameMap;
 
-    std::ifstream csvFile(kRemoteToRecordedFrameMapCsv);
+    std::ifstream csvFile(csvPath);
     if (!csvFile.is_open()) {
-        spdlog::warn("Failed to open remote-to-recorded frame map CSV: {}", kRemoteToRecordedFrameMapCsv);
+        spdlog::warn("Failed to open remote-to-recorded frame map CSV: {}", csvPath);
         return remoteToRecordedFrameMap;
     }
 
     std::string headerLine;
     if (!std::getline(csvFile, headerLine)) {
-        spdlog::warn("Remote-to-recorded frame map CSV is empty: {}", kRemoteToRecordedFrameMapCsv);
+        spdlog::warn("Remote-to-recorded frame map CSV is empty: {}", csvPath);
         return remoteToRecordedFrameMap;
     }
 
@@ -799,14 +1021,17 @@ RemoteToRecordedFrameMap loadRemoteToRecordedFrameMap() {
         return -1;
     };
 
-    const int remoteFrameIDColumn = findColumnIndex("remote_frame_id");
+    int remoteFrameIDColumn = findColumnIndex("remote_frame_id");
+    if (remoteFrameIDColumn < 0) {
+        remoteFrameIDColumn = findColumnIndex("frame_id");
+    }
     const int recordedFrameIDColumn = findColumnIndex("recorded_frame_id");
     const int recordedFrameIDPNGColumn = findColumnIndex("recorded_frame_id_png");
 
-    if (remoteFrameIDColumn < 0 || recordedFrameIDColumn < 0 || recordedFrameIDPNGColumn < 0) {
+    if (remoteFrameIDColumn < 0 || recordedFrameIDColumn < 0) {
         spdlog::warn(
             "Remote-to-recorded frame map CSV is missing required columns: {}",
-            kRemoteToRecordedFrameMapCsv);
+            csvPath);
         return remoteToRecordedFrameMap;
     }
 
@@ -830,15 +1055,24 @@ RemoteToRecordedFrameMap loadRemoteToRecordedFrameMap() {
         const bool hasRecordedFrameID = tryParseCSVInt(
             fields[recordedFrameIDColumn],
             recordedMaskFrame.recordedFrameID);
-        const bool hasRecordedFrameIDPNG = tryParseCSVInt(
-            fields[recordedFrameIDPNGColumn],
-            recordedMaskFrame.recordedFrameIDPNG);
+        bool hasRecordedFrameIDPNG = false;
+        if (recordedFrameIDPNGColumn >= 0) {
+            hasRecordedFrameIDPNG = tryParseCSVInt(
+                fields[recordedFrameIDPNGColumn],
+                recordedMaskFrame.recordedFrameIDPNG);
+        }
+        else if (hasRecordedFrameID) {
+            recordedMaskFrame.recordedFrameIDPNG = recordedMaskFrame.recordedFrameID;
+            hasRecordedFrameIDPNG = true;
+        }
 
-        auto& recordedMaskFrames = remoteToRecordedFrameMap[static_cast<uint>(remoteFrameID)];
-        if (!hasRecordedFrameID && !hasRecordedFrameIDPNG) {
+        if ((!hasRecordedFrameID || recordedMaskFrame.recordedFrameID < 0)
+            && (!hasRecordedFrameIDPNG || recordedMaskFrame.recordedFrameIDPNG < 0))
+        {
             continue;
         }
 
+        auto& recordedMaskFrames = remoteToRecordedFrameMap[static_cast<uint>(remoteFrameID)];
         bool alreadyRecorded = false;
         for (const RecordedWideFovMaskFrame& existingMaskFrame : recordedMaskFrames) {
             if (existingMaskFrame.recordedFrameID == recordedMaskFrame.recordedFrameID
@@ -854,15 +1088,150 @@ RemoteToRecordedFrameMap loadRemoteToRecordedFrameMap() {
         }
     }
 
+    spdlog::info(
+        "Loaded {} remote-frame -> recorded-frame wide-FOV mask mappings from {}",
+        remoteToRecordedFrameMap.size(),
+        csvPath);
     return remoteToRecordedFrameMap;
 }
 
-const RemoteToRecordedFrameMap& getRemoteToRecordedFrameMap() {
-    static const RemoteToRecordedFrameMap remoteToRecordedFrameMap = loadRemoteToRecordedFrameMap();
+RemoteToRecordedFrameMap loadRemoteToRecordedFrameMapFromJson(const std::string& jsonPath) {
+    RemoteToRecordedFrameMap remoteToRecordedFrameMap;
+
+    std::ifstream jsonFile(jsonPath);
+    if (!jsonFile.is_open()) {
+        spdlog::warn("Failed to open remote-to-recorded frame map JSON: {}", jsonPath);
+        return remoteToRecordedFrameMap;
+    }
+
+    nlohmann::json root;
+    try {
+        jsonFile >> root;
+    }
+    catch (const std::exception& e) {
+        spdlog::warn("Failed to parse remote-to-recorded frame map JSON {}: {}", jsonPath, e.what());
+        return remoteToRecordedFrameMap;
+    }
+
+    const auto remoteRenderFramesIt = root.find("remote_render_frames");
+    if (remoteRenderFramesIt == root.end() || !remoteRenderFramesIt->is_object()) {
+        spdlog::warn("Remote-to-recorded frame map JSON is missing remote_render_frames: {}", jsonPath);
+        return remoteToRecordedFrameMap;
+    }
+
+    for (const auto& [remoteFrameIDText, remoteFrameEntry] : remoteRenderFramesIt->items()) {
+        int remoteFrameID = -1;
+        try {
+            remoteFrameID = std::stoi(remoteFrameIDText);
+        }
+        catch (const std::exception&) {
+            continue;
+        }
+        if (remoteFrameID < 0 || !remoteFrameEntry.is_object()) {
+            continue;
+        }
+
+        auto& recordedMaskFrames = remoteToRecordedFrameMap[static_cast<uint>(remoteFrameID)];
+        const auto recordedFramesIt = remoteFrameEntry.find("Recorded Frame");
+        if (recordedFramesIt == remoteFrameEntry.end()
+            || !recordedFramesIt->is_object()
+            || recordedFramesIt->empty())
+        {
+            continue;
+        }
+
+        for (const auto& [recordedFrameIDPNGText, recordedFramePose] : recordedFramesIt->items()) {
+            RecordedWideFovMaskFrame recordedMaskFrame;
+            try {
+                recordedMaskFrame.recordedFrameIDPNG = std::stoi(recordedFrameIDPNGText);
+            }
+            catch (const std::exception&) {
+                continue;
+            }
+
+            recordedMaskFrame.recordedFrameID = recordedMaskFrame.recordedFrameIDPNG;
+            if (recordedFramePose.is_object()) {
+                const auto recordedFrameIDIt = recordedFramePose.find("recorded_frame_id");
+                if (recordedFrameIDIt != recordedFramePose.end() && recordedFrameIDIt->is_number_integer()) {
+                    recordedMaskFrame.recordedFrameID = recordedFrameIDIt->get<int>();
+                }
+            }
+
+            bool alreadyRecorded = false;
+            for (const RecordedWideFovMaskFrame& existingMaskFrame : recordedMaskFrames) {
+                if (existingMaskFrame.recordedFrameID == recordedMaskFrame.recordedFrameID
+                    && existingMaskFrame.recordedFrameIDPNG == recordedMaskFrame.recordedFrameIDPNG)
+                {
+                    alreadyRecorded = true;
+                    break;
+                }
+            }
+            if (!alreadyRecorded) {
+                recordedMaskFrames.push_back(recordedMaskFrame);
+            }
+        }
+    }
+
+    spdlog::info(
+        "Loaded {} remote-frame -> recorded-frame wide-FOV mask mappings from {}",
+        remoteToRecordedFrameMap.size(),
+        jsonPath);
     return remoteToRecordedFrameMap;
 }
 
-std::vector<Path> getWideFovTexelUsageMaskDirs(const std::string&) {
+RemoteToRecordedFrameMap loadRemoteToRecordedFrameMapFromCandidates(
+    const std::vector<std::string>& metadataPaths)
+{
+    for (const std::string& metadataPath : metadataPaths) {
+        if (!Path(metadataPath).exists()) {
+            continue;
+        }
+
+        RemoteToRecordedFrameMap remoteToRecordedFrameMap =
+            Path(metadataPath).extension() == ".json"
+                ? loadRemoteToRecordedFrameMapFromJson(metadataPath)
+                : loadRemoteToRecordedFrameMap(metadataPath);
+        if (!remoteToRecordedFrameMap.empty()) {
+            return remoteToRecordedFrameMap;
+        }
+    }
+
+    std::string candidateList;
+    for (const std::string& metadataPath : metadataPaths) {
+        if (!candidateList.empty()) {
+            candidateList += ", ";
+        }
+        candidateList += metadataPath;
+    }
+    spdlog::warn("Failed to load any remote-to-recorded frame map metadata from: {}", candidateList);
+    return {};
+}
+
+const RemoteToRecordedFrameMap& getRemoteToRecordedFrameMap(const std::string& wideFovGroundTruthDir) {
+    static std::unordered_map<std::string, RemoteToRecordedFrameMap> cachedMapsByCsvPath;
+    const std::vector<std::string> metadataPaths =
+        resolveRemoteToRecordedFrameMapCandidates(wideFovGroundTruthDir);
+    std::string cacheKey;
+    for (const std::string& metadataPath : metadataPaths) {
+        if (!cacheKey.empty()) {
+            cacheKey += ";";
+        }
+        cacheKey += metadataPath;
+    }
+
+    auto mapIt = cachedMapsByCsvPath.find(cacheKey);
+    if (mapIt == cachedMapsByCsvPath.end()) {
+        mapIt = cachedMapsByCsvPath.emplace(
+            cacheKey,
+            loadRemoteToRecordedFrameMapFromCandidates(metadataPaths)).first;
+    }
+    return mapIt->second;
+}
+
+std::vector<Path> getWideFovTexelUsageMaskDirs(
+    const std::string& wideFovGroundTruthDir,
+    const std::string& wideFovTexelUsageMaskDir)
+{
     std::vector<Path> maskDirs;
 
     auto appendMaskDirIfPresent = [&](const Path& maskDir) {
@@ -879,8 +1248,21 @@ std::vector<Path> getWideFovTexelUsageMaskDirs(const std::string&) {
         maskDirs.push_back(maskDir);
     };
 
-    const Path maskRoot{std::string(kWideFovTexelUsageRoot)};
-    appendMaskDirIfPresent(maskRoot / "quasarWideFoVUsage" / "widefov_texel_usage");
+    if (!wideFovTexelUsageMaskDir.empty()) {
+        appendMaskDirIfPresent(Path(wideFovTexelUsageMaskDir));
+    }
+
+    if (!wideFovGroundTruthDir.empty()) {
+        const Path groundTruthDir(wideFovGroundTruthDir);
+        appendMaskDirIfPresent(groundTruthDir / "widefov_texel_usage");
+        appendMaskDirIfPresent(groundTruthDir.parent() / "widefov_texel_usage");
+        appendMaskDirIfPresent(groundTruthDir / "quasarWideFoVUsage" / "widefov_texel_usage");
+    }
+
+    if (maskDirs.empty() && wideFovTexelUsageMaskDir.empty() && wideFovGroundTruthDir.empty()) {
+        const Path maskRoot{std::string(kWideFovTexelUsageRoot)};
+        appendMaskDirIfPresent(maskRoot / "quasarWideFoVUsage" / "widefov_texel_usage");
+    }
 
     return maskDirs;
 }
@@ -1065,13 +1447,15 @@ ExternalWideFovUsageMask createEmptyExternalWideFovUsageMask(
 
 bool loadExternalWideFovUsageMaskForRemoteFrame(
     uint remoteFrameID,
-    const std::string& wideFovImageDumpDir,
+    const std::string& wideFovGroundTruthDir,
+    const std::string& wideFovTexelUsageMaskDir,
     uint expectedWidth,
     uint expectedHeight,
     const glm::vec3 normalViewCornersInWideFoVImage[4],
     ExternalWideFovUsageMask& outMask)
 {
-    const RemoteToRecordedFrameMap& remoteToRecordedFrameMap = getRemoteToRecordedFrameMap();
+    const RemoteToRecordedFrameMap& remoteToRecordedFrameMap =
+        getRemoteToRecordedFrameMap(wideFovGroundTruthDir);
     const auto remoteFrameIt = remoteToRecordedFrameMap.find(remoteFrameID);
     if (remoteFrameIt == remoteToRecordedFrameMap.end()) {
         spdlog::info(
@@ -1088,7 +1472,9 @@ bool loadExternalWideFovUsageMaskForRemoteFrame(
         return false;
     }
 
-    const std::vector<Path> maskDirs = getWideFovTexelUsageMaskDirs(wideFovImageDumpDir);
+    const std::vector<Path> maskDirs = getWideFovTexelUsageMaskDirs(
+        wideFovGroundTruthDir,
+        wideFovTexelUsageMaskDir);
     if (maskDirs.empty()) {
         spdlog::warn("No wide-FOV texel-usage directories are available for remote frame {}", remoteFrameID);
         return false;
@@ -1274,6 +1660,8 @@ QUASARStreamer::QUASARStreamer(
     , videoURL(params.videoURL)
     , proxiesURL(params.proxiesURL)
     , wideFovImageDumpDir(params.wideFovImageDumpDir)
+    , wideFovGroundTruthDir(params.wideFovGroundTruthDir)
+    , wideFovTexelUsageMaskDir(params.wideFovTexelUsageMaskDir)
     , datasetOutputDir(params.datasetOutputDir)
     , maxLayers(params.maxLayers)
     , wideFovPoseLagFrames(params.wideFovPoseLagFrames)
@@ -1542,8 +1930,12 @@ QUASARStreamer::QUASARStreamer(
     }
 
     const std::string outputDir = getOutputDirFromWideFovDumpDir(wideFovImageDumpDir);
+    const std::string loggedOutputDir = !datasetOutputDir.empty() ? datasetOutputDir : outputDir;
+    if (!loggedOutputDir.empty()) {
+        Path(loggedOutputDir).mkdirRecursive();
+    }
 
-    quasarStatsCSVFileName = outputDir + "/quasar_stats.csv";
+    quasarStatsCSVFileName = loggedOutputDir + "/quasar_stats.csv";
     quasarStatsCSVFile.open(quasarStatsCSVFileName);
     quasarStatsCSVFile << "frame_id";
     quasarStatsCSVFile << ",visible_render";
@@ -1562,7 +1954,7 @@ QUASARStreamer::QUASARStreamer(
     
     // add output dir to bandwidth stats
 
-    bandwidthStatsCSVFileName = outputDir + "/quasar_streamer_bitrate.csv";
+    bandwidthStatsCSVFileName = loggedOutputDir + "/quasar_streamer_bitrate.csv";
     bandwidthStatsCSVFile.open(bandwidthStatsCSVFileName);
     bandwidthStatsCSVFile << "frameID";
     bandwidthStatsCSVFile << ",atlas_bitrate";
@@ -1586,12 +1978,24 @@ QUASARStreamer::QUASARStreamer(
             << "depth_read_success"
             << std::endl;
         cornerDepthDatasetCSVFile.close();
+
+        wideFovCornerUncertaintyCSVFileName = (Path(datasetOutputDir) / "widefov_corner_uncertainty.csv").str();
+        wideFovCornerUncertaintyCSVFile.open(wideFovCornerUncertaintyCSVFileName);
+        wideFovCornerUncertaintyCSVFile
+            << "frame_id,corner_id,confidence,chi2_threshold,depth,valid,"
+            << "camera_x,camera_y,camera_z,"
+            << "normal_px_x,normal_px_y,wide_px_x,wide_px_y,"
+            << "expanded_wide_px_x,expanded_wide_px_y,"
+            << "sigma_u_00,sigma_u_01,sigma_u_11,lambda_max,"
+            << "unclamped_radius_px,radius_px,min_radius_px,max_radius_px"
+            << std::endl;
+        wideFovCornerUncertaintyCSVFile.close();
     }
 
     if (trimWideFov && !outputDir.empty()) {
-        Path reprojectionMaskCompareDir = getReprojectionMaskCompareDir(wideFovImageDumpDir);
-        reprojectionMaskCompareDir.mkdirRecursive();
-        std::ofstream posePairsCsv((reprojectionMaskCompareDir / "pose_pairs.csv").str());
+        Path reprojectionMaskCompareInfoDir = getReprojectionMaskCompareLoggedInfoDir(wideFovImageDumpDir);
+        reprojectionMaskCompareInfoDir.mkdirRecursive();
+        std::ofstream posePairsCsv((reprojectionMaskCompareInfoDir / "pose_pairs.csv").str());
         posePairsCsv << "frame_id,"
                      << "prev_pos_x,prev_pos_y,prev_pos_z,"
                      << "prev_rot_x_deg,prev_rot_y_deg,prev_rot_z_deg,"
@@ -1680,10 +2084,9 @@ RenderStats QUASARStreamer::generateFrame(
     bool createResidualFrame,
     bool showNormals,
     bool showDepth,
-    const glm::mat4* wideFovGroundTruthView) {
-    const glm::mat4* const effectiveWideFovGt =
-        (useWideFovGroundTruth && wideFovGroundTruthView != nullptr) ? wideFovGroundTruthView : nullptr;
-
+    const glm::mat4* wideFovGroundTruthView,
+    const std::vector<glm::mat4>* debugWideFovMaskTargetViews,
+    const WideFovReprojectionUncertainty* wideFovReprojectionUncertainty) {
     // Reset stats
     Stats prevStats = stats;
     stats = { 0 };
@@ -1795,7 +2198,7 @@ RenderStats QUASARStreamer::generateFrame(
                 createResidualFrame ? "remoteCameraPrev" : "remoteCamera",
                 remoteCameraToUse.getViewMatrix(),
                 renderTargetToUse);
-            // if (trimWideFov && effectiveWideFovGt != nullptr && !wideFovImageDumpDir.empty()) {
+            // if (trimWideFov && useWideFovGroundTruth && wideFovGroundTruthView != nullptr && !wideFovImageDumpDir.empty()) {
             //     dumpTrimWideFovAtwReprojectionDebug(
             //         static_cast<uint>(frameID),
             //         wideFovImageDumpDir,
@@ -1805,7 +2208,7 @@ RenderStats QUASARStreamer::generateFrame(
             //         renderTargetToUse,
             //         remoteCameraToUse.getViewMatrix(),
             //         remoteCameraToUse.getProjectionMatrix(),
-            //         *effectiveWideFovGt,
+            //         *wideFovGroundTruthView,
             //         remoteCamera.getProjectionMatrix());
             // }
         }
@@ -1817,16 +2220,51 @@ RenderStats QUASARStreamer::generateFrame(
         // Wide fov camera
         else if (renderWideFovThisFrame) {
             
-            // Draw old center mesh at new remoteCamera layer, filling stencil buffer with 1
-            glm::mat4 prevViewMatrix = effectiveWideFovGt != nullptr
-                ? remoteCamera.getViewMatrix()
-                : remoteCameraPrev.getViewMatrix();
+            // Reproject from the actual remote-render source pose. Ground-truth/covariance
+            // targets only change the destination pose used to compute the wide-FOV mask.
+            glm::mat4 prevViewMatrix = remoteCamera.getViewMatrix();
             glm::mat4 prevViewMatrixInverse = glm::inverse(prevViewMatrix);
-            glm::mat4 prevProjectionMatrix = remoteCameraPrev.getProjectionMatrix();
+            glm::mat4 prevProjectionMatrix = remoteCamera.getProjectionMatrix();
 
-            glm::mat4 currentViewMatrix = effectiveWideFovGt != nullptr
-                ? *effectiveWideFovGt
-                : remoteCamera.getViewMatrix();
+            glm::mat4 currentViewMatrix = remoteCamera.getViewMatrix();
+            const char* wideFovTargetPoseSource = "remoteCamera";
+            std::vector<glm::mat4> activeWideFovMaskTargetViews;
+            const bool useAnalyticReprojectionUncertainty =
+                wideFovReprojectionUncertainty != nullptr
+                && wideFovReprojectionUncertainty->enabled
+                && wideFovReprojectionUncertainty->valid;
+            if (useAnalyticReprojectionUncertainty) {
+                currentViewMatrix = wideFovReprojectionUncertainty->meanViewMatrix;
+                wideFovTargetPoseSource = "wideFovReprojectionUncertainty";
+                activeWideFovMaskTargetViews.push_back(currentViewMatrix);
+                if (debugWideFovMaskTargetViews != nullptr && debugWideFovMaskTargetViews->size() > 1u) {
+                    activeWideFovMaskTargetViews.insert(
+                        activeWideFovMaskTargetViews.end(),
+                        debugWideFovMaskTargetViews->begin() + 1,
+                        debugWideFovMaskTargetViews->end());
+                    spdlog::info(
+                        "Using analytic wide-FOV reprojection uncertainty plus {} debug covariance-sampled poses on frame {}",
+                        debugWideFovMaskTargetViews->size() - 1u,
+                        frameID);
+                }
+            }
+            else if (debugWideFovMaskTargetViews != nullptr && !debugWideFovMaskTargetViews->empty()) {
+                activeWideFovMaskTargetViews = *debugWideFovMaskTargetViews;
+                currentViewMatrix = activeWideFovMaskTargetViews.front();
+                wideFovTargetPoseSource = "debugWideFovMaskTargetViews";
+                spdlog::info(
+                    "Using {} debug covariance-sampled target poses for wide-FOV stencil union on frame {}",
+                    activeWideFovMaskTargetViews.size(),
+                    frameID);
+            }
+            else if (useWideFovGroundTruth && wideFovGroundTruthView != nullptr) {
+                currentViewMatrix = *wideFovGroundTruthView;
+                wideFovTargetPoseSource = "wideFovGroundTruthView";
+                activeWideFovMaskTargetViews.push_back(currentViewMatrix);
+            }
+            else {
+                activeWideFovMaskTargetViews.push_back(currentViewMatrix);
+            }
             glm::mat4 currentProjectionMatrix = remoteCamera.getProjectionMatrix();
 
             logPoseForDebug("Previous", prevViewMatrix);
@@ -1846,7 +2284,8 @@ RenderStats QUASARStreamer::generateFrame(
             if (trimWideFov) {
             const glm::vec2 viewportSize(remoteRenderer.width, remoteRenderer.height);
             float cornerPlaneDepths[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-            tryGetCurrentNormalViewCornerPlaneDepths(referenceFrameMeshes[currMeshIndex], quadSet.getSize(), cornerPlaneDepths);
+            const bool cornerDepthsReliable =
+                tryGetCurrentNormalViewCornerPlaneDepths(referenceFrameMeshes[currMeshIndex], quadSet.getSize(), cornerPlaneDepths);
             const glm::vec3 normalViewportCorners[4] = {
                 glm::vec3(-1.0f, -1.0f, 1.0f),
                 glm::vec3(1.0f, -1.0f, 1.0f),
@@ -1854,6 +2293,7 @@ RenderStats QUASARStreamer::generateFrame(
                 glm::vec3(1.0f, 1.0f, 1.0f),
             };
 
+            glm::vec4 cornerInWorldPoints[4];
             glm::vec2 timewarpedPreviousCornersInNormalView[4];
             glm::vec2 timewarpedPreviousCornersInWideFov[4];
             for (int i = 0; i < 4; i++) {
@@ -1867,6 +2307,7 @@ RenderStats QUASARStreamer::generateFrame(
                     cornerPlaneDepthNdc);
 
                 glm::vec4 cornerInWorld = prevViewMatrixInverse * prevProjectionMatrixInverse * glm::vec4(corner, 1.0f);
+                cornerInWorldPoints[i] = cornerInWorld;
                 glm::vec4 reprojectedCorner = currentProjectionMatrix * currentViewMatrix * cornerInWorld;
 
                 spdlog::info(
@@ -1956,6 +2397,96 @@ RenderStats QUASARStreamer::generateFrame(
                     timewarpedPreviousCornersInWideFov[i].y);
             }
 
+            CornerUncertaintyInfo cornerUncertainties[4];
+            glm::vec2 uncertaintyBaseWideCorners[4] = {
+                timewarpedPreviousCornersInWideFov[0],
+                timewarpedPreviousCornersInWideFov[1],
+                timewarpedPreviousCornersInWideFov[2],
+                timewarpedPreviousCornersInWideFov[3],
+            };
+            double chi2Threshold = 0.0;
+            float uncertaintyMinRadiusPx = 0.0f;
+            float uncertaintyMaxRadiusPx = 0.0f;
+            if (useAnalyticReprojectionUncertainty) {
+                chi2Threshold = chi2ForWideFovConfidence(wideFovReprojectionUncertainty->confidence);
+                uncertaintyMinRadiusPx = std::max(0.0f, wideFovReprojectionUncertainty->minRadiusPx);
+                uncertaintyMaxRadiusPx = std::max(
+                    uncertaintyMinRadiusPx,
+                    wideFovReprojectionUncertainty->maxRadiusPx);
+                const std::array<double, 36> poseCovarianceCameraFrame =
+                    transformPoseCovarianceToCameraFrame(
+                        wideFovReprojectionUncertainty->poseCovariance,
+                        currentViewMatrix);
+
+                for (int i = 0; i < 4; ++i) {
+                    const bool depthValid =
+                        cornerDepthsReliable
+                        && std::isfinite(cornerPlaneDepths[i])
+                        && cornerPlaneDepths[i] > 0.0f
+                        && cornerPlaneDepths[i] < 1.0f;
+                    if (!depthValid) {
+                        continue;
+                    }
+
+                    cornerUncertainties[i] = computeCornerReprojectionUncertainty(
+                        cornerInWorldPoints[i],
+                        currentViewMatrix,
+                        remoteCameraWideFoVProjectionMatrix,
+                        quadSet.getSize(),
+                        poseCovarianceCameraFrame,
+                        chi2Threshold,
+                        uncertaintyMinRadiusPx,
+                        uncertaintyMaxRadiusPx);
+                }
+
+                expandCornerQuadByUncertainty(timewarpedPreviousCornersInWideFov, cornerUncertainties);
+                spdlog::info(
+                    "Wide-FOV analytic corner uncertainty frame {}: radii_px=({:.3f}, {:.3f}, {:.3f}, {:.3f}), "
+                    "confidence={:.2f}, chi2={:.2f}, clamp=[{:.3f}, {:.3f}]",
+                    frameID,
+                    cornerUncertainties[0].radiusPx,
+                    cornerUncertainties[1].radiusPx,
+                    cornerUncertainties[2].radiusPx,
+                    cornerUncertainties[3].radiusPx,
+                    wideFovReprojectionUncertainty->confidence,
+                    chi2Threshold,
+                    uncertaintyMinRadiusPx,
+                    uncertaintyMaxRadiusPx);
+
+                if (!wideFovCornerUncertaintyCSVFileName.empty()) {
+                    wideFovCornerUncertaintyCSVFile.open(wideFovCornerUncertaintyCSVFileName, std::ios::app);
+                    for (int i = 0; i < 4; ++i) {
+                        const CornerUncertaintyInfo& info = cornerUncertainties[i];
+                        wideFovCornerUncertaintyCSVFile
+                            << frameID << ","
+                            << i << ","
+                            << wideFovReprojectionUncertainty->confidence << ","
+                            << chi2Threshold << ","
+                            << cornerPlaneDepths[i] << ","
+                            << (info.valid ? 1 : 0) << ","
+                            << info.cameraPoint.x << ","
+                            << info.cameraPoint.y << ","
+                            << info.cameraPoint.z << ","
+                            << timewarpedPreviousCornersInNormalView[i].x << ","
+                            << timewarpedPreviousCornersInNormalView[i].y << ","
+                            << uncertaintyBaseWideCorners[i].x << ","
+                            << uncertaintyBaseWideCorners[i].y << ","
+                            << timewarpedPreviousCornersInWideFov[i].x << ","
+                            << timewarpedPreviousCornersInWideFov[i].y << ","
+                            << info.sigmaU00 << ","
+                            << info.sigmaU01 << ","
+                            << info.sigmaU11 << ","
+                            << info.lambdaMax << ","
+                            << info.unclampedRadiusPx << ","
+                            << info.radiusPx << ","
+                            << uncertaintyMinRadiusPx << ","
+                            << uncertaintyMaxRadiusPx
+                            << std::endl;
+                    }
+                    wideFovCornerUncertaintyCSVFile.close();
+                }
+            }
+
             remoteRenderer.gBuffer.bind();
             remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
             remoteRenderer.pipeline.stencilState.stencilRef = 1;
@@ -1975,6 +2506,69 @@ RenderStats QUASARStreamer::generateFrame(
             quadMaskShader.setVec2("uCorners[2]", timewarpedPreviousCornersInWideFov[2]);
             quadMaskShader.setVec2("uCorners[3]", timewarpedPreviousCornersInWideFov[3]);
             quadMaskQuad.draw();
+
+            for (size_t targetViewIndex = 1; targetViewIndex < activeWideFovMaskTargetViews.size(); ++targetViewIndex) {
+                glm::vec2 sampledCornersInNormalView[4];
+                glm::vec2 sampledCornersInWideFov[4];
+                const glm::mat4& sampledTargetViewMatrix = activeWideFovMaskTargetViews[targetViewIndex];
+
+                for (int i = 0; i < 4; ++i) {
+                    glm::vec3 corner = normalViewportCorners[i];
+                    corner.z = cornerPlaneDepths[i] * 2.0f - 1.0f;
+
+                    const glm::vec4 cornerInWorld =
+                        prevViewMatrixInverse * prevProjectionMatrixInverse * glm::vec4(corner, 1.0f);
+
+                    glm::vec4 sampledCornerInNormal =
+                        currentProjectionMatrix * sampledTargetViewMatrix * cornerInWorld;
+                    sampledCornerInNormal /= sampledCornerInNormal.w;
+                    sampledCornerInNormal.x =
+                        (sampledCornerInNormal.x + 1.0f) * 0.5f * quadSet.getSize().x;
+                    sampledCornerInNormal.y =
+                        (sampledCornerInNormal.y + 1.0f) * 0.5f * quadSet.getSize().y;
+                    sampledCornersInNormalView[i] = glm::vec2(sampledCornerInNormal);
+
+                    glm::vec4 sampledCornerInWideFov =
+                        remoteCameraWideFoVProjectionMatrix * sampledTargetViewMatrix * cornerInWorld;
+                    sampledCornerInWideFov /= sampledCornerInWideFov.w;
+                    sampledCornerInWideFov.x =
+                        (sampledCornerInWideFov.x + 1.0f) * 0.5f * quadSet.getSize().x;
+                    sampledCornerInWideFov.y =
+                        (sampledCornerInWideFov.y + 1.0f) * 0.5f * quadSet.getSize().y;
+                    sampledCornersInWideFov[i] = glm::vec2(sampledCornerInWideFov);
+                }
+
+                for (int i = 0; i < 4; ++i) {
+                    const glm::vec2 originalWideFovCorner = sampledCornersInWideFov[i];
+                    const bool xInRange =
+                        originalWideFovCorner.x >= normalViewRectMin.x
+                        && originalWideFovCorner.x <= normalViewRectMax.x;
+                    const bool yInRange =
+                        originalWideFovCorner.y >= normalViewRectMin.y
+                        && originalWideFovCorner.y <= normalViewRectMax.y;
+
+                    if (!xInRange && !yInRange) {
+                        continue;
+                    }
+
+                    const glm::vec2 deltaInNormalView =
+                        quadWindowCorners[i] - sampledCornersInNormalView[i];
+                    if (xInRange) {
+                        sampledCornersInWideFov[i].x =
+                            normalViewCornersInWideFoVImage[i].x + deltaInNormalView.x;
+                    }
+                    if (yInRange) {
+                        sampledCornersInWideFov[i].y =
+                            normalViewCornersInWideFoVImage[i].y + deltaInNormalView.y;
+                    }
+                }
+
+                quadMaskShader.setVec2("uCorners[0]", sampledCornersInWideFov[0]);
+                quadMaskShader.setVec2("uCorners[1]", sampledCornersInWideFov[1]);
+                quadMaskShader.setVec2("uCorners[2]", sampledCornersInWideFov[2]);
+                quadMaskShader.setVec2("uCorners[3]", sampledCornersInWideFov[3]);
+                quadMaskQuad.draw();
+            }
 
             remoteRenderer.pipeline.stencilState.enableRenderingIntoStencilBuffer(GL_KEEP, GL_KEEP, GL_REPLACE);
             remoteRenderer.pipeline.stencilState.stencilRef = 0;
@@ -2015,7 +2609,8 @@ RenderStats QUASARStreamer::generateFrame(
             if (useExternalWideFovUsageMask) {
                 hasExternalWideFovUsageMask = loadExternalWideFovUsageMaskForRemoteFrame(
                     static_cast<uint>(frameID),
-                    wideFovImageDumpDir,
+                    wideFovGroundTruthDir,
+                    wideFovTexelUsageMaskDir,
                     renderTargetToUse.width,
                     renderTargetToUse.height,
                     normalViewCornersInWideFoVImage,
@@ -2042,7 +2637,7 @@ RenderStats QUASARStreamer::generateFrame(
             appendCornerDepthRow(
                 "wide_fov",
                 true,
-                effectiveWideFovGt != nullptr ? "wideFovGroundTruthView" : "remoteCameraWideFOV",
+                wideFovTargetPoseSource,
                 remoteCameraToUse.getViewMatrix(),
                 renderTargetToUse);
 
