@@ -1,18 +1,27 @@
 #!/bin/bash
 SCENES=(
-    # "viking_village" 
-    # "sponza" 
-    "robot_lab"
-    # "sun_temple"
-    # "san_miguel"
+    "viking_village" 
+    "sponza" 
+    # "robot_lab"
+    "sun_temple"
+    "san_miguel"
 )
 
 APP=./apps/scene_viewer/scene_viewer
 PARAMS=()
+EXTRA_PARAMS=("${@:4}")
 
 if [ "$2" == "quasar" ]; then
     echo "Running Quasar build script..."
     APP=./apps/quasar/simulator/qr_simulator
+    if [ "${#EXTRA_PARAMS[@]}" -gt 0 ] && [[ "${EXTRA_PARAMS[0]}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        PARAMS+=("--remote-fov-wide" "${EXTRA_PARAMS[0]}")
+        EXTRA_PARAMS=("${EXTRA_PARAMS[@]:1}")
+    fi
+    if [ "${#EXTRA_PARAMS[@]}" -gt 0 ] && [ "${EXTRA_PARAMS[0]}" == "dump" ]; then
+        # This wrapper already passes --save-images below; keep legacy invocations working.
+        EXTRA_PARAMS=("${EXTRA_PARAMS[@]:1}")
+    fi
     PARAMS+=("--pose-prediction" "--network-latency" "20.0" "--network-jitter" "0.0")
     PARAMS+=("--view-size" "0.25")
     # PARAMS+=("--E-path")
@@ -49,7 +58,7 @@ for SCENE in "${SCENES[@]}"; do
     mkdir -p $DST_DIR
     echo "Running build for scene: $SCENE"
     # $APP --size 1920x1080 --scene ../assets/scenes/$SCENE.json --save-images --camera-path ../assets/paths/$SCENE\_path.txt --output-path $DST_DIR "${PARAMS[@]}" "/media/csl-wanhanglu/SSD/quasarOutput/TestScript/predictedPoseVerseRenderPose/$SCENE/pose_differences.csv" &> $DST_DIR/build_log.txt
-        $APP --size 1920x1080 --scene ../assets/scenes/$SCENE.json --save-images --camera-path ../assets/paths/$SCENE\_path.txt --output-path $DST_DIR "${PARAMS[@]}" &> $DST_DIR/build_log.txt
+        $APP --size 1920x1080 --scene ../assets/scenes/$SCENE.json --save-images --camera-path ../assets/paths/$SCENE\_path.txt --output-path $DST_DIR "${PARAMS[@]}" "${EXTRA_PARAMS[@]}" &> $DST_DIR/build_log.txt
     # # Add for pose dumping
     # mkdir -p "/media/csl-wanhanglu/SSD/quasarOutput/TestScript/predictedPoseVerseRenderPoseNoSmooth/$SCENE"
     # mv predicted_poses.csv "/media/csl-wanhanglu/SSD/quasarOutput/TestScript/predictedPoseVerseRenderPoseNoSmooth/$SCENE/predicted_poses.csv"
