@@ -197,6 +197,35 @@ int main(int argc, char** argv) {
     args::ValueFlag<float> remoteFOVWideIn(parser, "remote-fov-wide", "Remote camera FOV in degrees for wide fov", {'W', "remote-fov-wide"}, 140.0f);
     args::ValueFlag<int> maxHiddenLayersIn(parser, "layers", "Max hidden layers", {'n', "max-hidden-layers"}, 3);
     args::ValueFlag<float> viewSphereDiameterIn(parser, "view-sphere-diameter", "Size of view sphere in m", {'B', "view-size"}, 0.5f);
+    args::Flag dynamicEdpEIn(
+        parser,
+        "dynamic-edp-e",
+        "Drive depth-peeling E from pose prediction uncertainty instead of always using viewSphereDiameter / 2",
+        {"dynamic-edp-e"});
+    args::ValueFlag<float> dynamicEdpEMinIn(
+        parser,
+        "meters",
+        "Minimum dynamic depth-peeling E radius",
+        {"dynamic-edp-e-min"},
+        0.005f);
+    args::ValueFlag<float> dynamicEdpEMaxIn(
+        parser,
+        "meters",
+        "Maximum dynamic depth-peeling E radius; negative means viewSphereDiameter / 2",
+        {"dynamic-edp-e-max"},
+        -1.0f);
+    args::ValueFlag<float> dynamicEdpEPositionScaleIn(
+        parser,
+        "scale",
+        "Scale applied to the position uncertainty term for dynamic depth-peeling E",
+        {"dynamic-edp-e-position-scale"},
+        1.0f);
+    args::ValueFlag<float> dynamicEdpERotationLeverArmIn(
+        parser,
+        "meters",
+        "World-space lever arm used to convert rotation uncertainty radians into dynamic depth-peeling E meters",
+        {"dynamic-edp-e-rotation-lever-arm"},
+        1.0f);
     args::ValueFlag<int> wideFovPoseLagFramesIn(parser, "wide-fov-pose-lag", "Wide-FOV layer renders with camera view from this many frames ago", {'L', "wide-fov-pose-lag"}, 0);
     args::ValueFlag<int> wideFovUpdatePeriodIn(parser, "wide-fov-update-period", "Regenerate wide-FOV layer only when frameID mod N == 0 (1 = every frame)", {'K', "wide-fov-update-period"}, 1);
     args::ValueFlag<std::string> wideFovDumpDirIn(parser, "path", "Dump wide-FOV tonemapped PNG per frame to this folder (empty = off)", {"wide-fov-dump-dir"}, "");
@@ -346,11 +375,29 @@ int main(int argc, char** argv) {
     QuadSet quadSet(remoteWindowSize);
     float remoteFOVWide = args::get(remoteFOVWideIn);
     float viewSphereDiameter = args::get(viewSphereDiameterIn);
+    const float baseEdpERadius = viewSphereDiameter * 0.5f;
+    const bool dynamicEdpE = args::get(dynamicEdpEIn);
+    const float dynamicEdpEMin = std::max(0.0f, args::get(dynamicEdpEMinIn));
+    const float dynamicEdpEMaxArg = args::get(dynamicEdpEMaxIn);
+    const float dynamicEdpEMax = std::max(
+        dynamicEdpEMin,
+        dynamicEdpEMaxArg < 0.0f ? baseEdpERadius : dynamicEdpEMaxArg);
+    const float dynamicEdpEPositionScale = std::max(0.0f, args::get(dynamicEdpEPositionScaleIn));
+    const float dynamicEdpERotationLeverArm = std::max(0.0f, args::get(dynamicEdpERotationLeverArmIn));
     int wideFovPoseLagArg = args::get(wideFovPoseLagFramesIn);
     uint wideFovPoseLagFrames = static_cast<uint>(wideFovPoseLagArg < 0 ? 0 : wideFovPoseLagArg);
 
 
     spdlog::info("Remote FOV Wide: {}", remoteFOVWide);
+    if (dynamicEdpE) {
+        spdlog::info(
+            "Dynamic EDP E: Enabled, base={:.6f}m, clamp=[{:.6f}, {:.6f}]m, position_scale={:.3f}, rotation_lever_arm={:.3f}m",
+            baseEdpERadius,
+            dynamicEdpEMin,
+            dynamicEdpEMax,
+            dynamicEdpEPositionScale,
+            dynamicEdpERotationLeverArm);
+    }
 
     // hardcode wide fov pose lag frames to 1
     wideFovPoseLagFrames = 0;
@@ -411,7 +458,8 @@ int main(int argc, char** argv) {
     std::ofstream predictionPoseTimestampsFile((outputPath / "pose_prediction_timestamps.csv").str());
     predictionPoseTimestampsFile
         << "recorded_frame_id,prediction_used,"
-        << "latest_pose_timestamp_us,prev_pose_timestamp_us,prev_but_two_pose_timestamp_us,predicted_pose_timestamp_us"
+        << "latest_pose_timestamp_us,prev_pose_timestamp_us,prev_but_two_pose_timestamp_us,predicted_pose_timestamp_us,"
+        << "position_uncertainty_m,rotation_uncertainty_rad,dynamic_edp_e_m"
         << std::endl;
     std::ofstream recordedFramePoseFile((outputPath / "recorded_frame_render_poses.csv").str());
     recordedFramePoseFile
@@ -760,6 +808,7 @@ int main(int argc, char** argv) {
     int frameCounter = 0;
     PoseSendRecvSimulator::PredictionDebugInfo activePredictionDebugInfo;
     std::optional<Pose> activeRemoteRenderPose;
+    float currentDynamicEdpE = baseEdpERadius;
 
     std::string wideFovClientColorTextureDumpDir = args::get(wideFovClientColorTextureDumpDirIn);
     std::string wideFovClientTexelUsageDumpDir;
@@ -940,6 +989,28 @@ int main(int argc, char** argv) {
                 }
             }
 
+            if (dynamicEdpE) {
+                currentDynamicEdpE = baseEdpERadius;
+                if (activePredictionDebugInfo.valid && activePredictionDebugInfo.usedPrediction) {
+                    const float predictionUncertaintyM =
+                        dynamicEdpEPositionScale * activePredictionDebugInfo.predictionPositionUncertaintyM
+                        + dynamicEdpERotationLeverArm * activePredictionDebugInfo.predictionRotationUncertaintyRad;
+                    currentDynamicEdpE = glm::clamp(predictionUncertaintyM, dynamicEdpEMin, dynamicEdpEMax);
+                }
+                remoteRendererDP.setEOverride(currentDynamicEdpE);
+                spdlog::info(
+                    "Dynamic EDP E for QUASAR frame {}: E={:.6f}m, base={:.6f}m, pos_uncertainty={:.6f}m, rot_uncertainty={:.6f}rad",
+                    quasar.frameID + 1,
+                    currentDynamicEdpE,
+                    baseEdpERadius,
+                    activePredictionDebugInfo.predictionPositionUncertaintyM,
+                    activePredictionDebugInfo.predictionRotationUncertaintyRad);
+            }
+            else {
+                currentDynamicEdpE = baseEdpERadius;
+                remoteRendererDP.clearEOverride();
+            }
+
             quasar.generateFrame(
                 sendResidualFrame,
                 showNormals,
@@ -1082,7 +1153,10 @@ int main(int argc, char** argv) {
                 << activePredictionDebugInfo.latestTimestampUs << ","
                 << activePredictionDebugInfo.previousTimestampUs << ","
                 << activePredictionDebugInfo.secondPreviousTimestampUs << ","
-                << activePredictionDebugInfo.predictedTimestampUs
+                << activePredictionDebugInfo.predictedTimestampUs << ","
+                << activePredictionDebugInfo.predictionPositionUncertaintyM << ","
+                << activePredictionDebugInfo.predictionRotationUncertaintyRad << ","
+                << currentDynamicEdpE
                 << std::endl;
 
             const glm::quat recordedFrameRotationQuat = glm::normalize(camera.getRotationQuat());

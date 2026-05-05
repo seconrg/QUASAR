@@ -55,3 +55,4 @@ ImportExecutables-*.cmake
 *png
 
 */__MACOSX/*
+unit_test/*

@@ -12,6 +12,7 @@ public:
     uint maxLayers;
     float viewSphereDiameter = 0.5f;
     float edpDelta = 0.0005f;
+    float eOverride = -1.0f;
 
     std::vector<FrameRenderTarget> peelingLayers;
 
@@ -19,6 +20,9 @@ public:
     ~DepthPeelingRenderer() = default;
 
     void setViewSphereDiameter(float viewSphereDiameter) { this->viewSphereDiameter = viewSphereDiameter; }
+    void setEOverride(float eRadius) { eOverride = eRadius; }
+    void clearEOverride() { eOverride = -1.0f; }
+    float getEffectiveE() const { return eOverride >= 0.0f ? eOverride : viewSphereDiameter / 2.0f; }
     virtual void setScreenShaderUniforms(const Shader& screenShader) override;
 
     virtual void resize(uint width, uint height) override;

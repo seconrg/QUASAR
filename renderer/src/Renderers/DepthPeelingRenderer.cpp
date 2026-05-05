@@ -3,6 +3,28 @@
 
 using namespace quasar;
 
+namespace {
+
+void setEDPUniforms(float eRadius, float edpDelta) {
+    if (LitMaterial::deferredShader != nullptr) {
+        LitMaterial::deferredShader->bind();
+        LitMaterial::deferredShader->setFloat("E", eRadius);
+        LitMaterial::deferredShader->setFloat("edpDelta", edpDelta);
+    }
+    if (LitMaterial::forwardShader != nullptr) {
+        LitMaterial::forwardShader->bind();
+        LitMaterial::forwardShader->setFloat("E", eRadius);
+        LitMaterial::forwardShader->setFloat("edpDelta", edpDelta);
+    }
+    if (UnlitMaterial::shader != nullptr) {
+        UnlitMaterial::shader->bind();
+        UnlitMaterial::shader->setFloat("E", eRadius);
+        UnlitMaterial::shader->setFloat("edpDelta", edpDelta);
+    }
+}
+
+} // namespace
+
 DepthPeelingRenderer::DepthPeelingRenderer(const Config& config, uint maxLayers, bool edp)
     : maxLayers(maxLayers)
     , edp(edp)
@@ -139,21 +161,7 @@ RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera
         pipeline.apply();
 
         if (edp) {
-            if (LitMaterial::deferredShader != nullptr) {
-                LitMaterial::deferredShader->bind();
-                LitMaterial::deferredShader->setFloat("E", viewSphereDiameter / 2.0f);
-                LitMaterial::deferredShader->setFloat("edpDelta", edpDelta);
-            }
-            if (LitMaterial::forwardShader != nullptr) {
-                LitMaterial::forwardShader->bind();
-                LitMaterial::forwardShader->setFloat("E", viewSphereDiameter / 2.0f);
-                LitMaterial::forwardShader->setFloat("edpDelta", edpDelta);
-            }
-            if (UnlitMaterial::shader != nullptr) {
-                UnlitMaterial::shader->bind();
-                UnlitMaterial::shader->setFloat("E", viewSphereDiameter / 2.0f);
-                UnlitMaterial::shader->setFloat("edpDelta", edpDelta);
-            }
+            setEDPUniforms(getEffectiveE(), edpDelta);
         }
 
         RenderStats stats;
@@ -181,21 +189,7 @@ RenderStats DepthPeelingRenderer::drawObjectsNoLighting(Scene& scene, const Came
     pipeline.apply();
 
     if (edp) {
-        if (LitMaterial::deferredShader != nullptr) {
-            LitMaterial::deferredShader->bind();
-            LitMaterial::deferredShader->setFloat("E", viewSphereDiameter / 2.0f);
-            LitMaterial::deferredShader->setFloat("edpDelta", edpDelta);
-        }
-        if (LitMaterial::forwardShader != nullptr) {
-            LitMaterial::forwardShader->bind();
-            LitMaterial::forwardShader->setFloat("E", viewSphereDiameter / 2.0f);
-            LitMaterial::forwardShader->setFloat("edpDelta", edpDelta);
-        }
-        if (UnlitMaterial::shader != nullptr) {
-            UnlitMaterial::shader->bind();
-            UnlitMaterial::shader->setFloat("E", viewSphereDiameter / 2.0f);
-            UnlitMaterial::shader->setFloat("edpDelta", edpDelta);
-        }
+        setEDPUniforms(getEffectiveE(), edpDelta);
     }
 
     RenderStats stats;

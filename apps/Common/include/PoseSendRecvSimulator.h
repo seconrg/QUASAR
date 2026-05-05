@@ -34,6 +34,8 @@ public:
         int64_t previousTimestampUs = -1;
         int64_t secondPreviousTimestampUs = -1;
         int64_t predictedTimestampUs = -1;
+        float predictionPositionUncertaintyM = 0.0f;
+        float predictionRotationUncertaintyRad = 0.0f;
     };
 
     struct ErrorStats {
@@ -103,7 +105,8 @@ private:
     bool getPosePredicted(
         Pose& predictedPose,
         const Pose& latest, const Pose& previous, const Pose& secondPrevious,
-        double targetFutureTimeS);
+        double targetFutureTimeS,
+        PredictionDebugInfo* predictionDebugInfo = nullptr);
 };
 
 } // namespace quasar

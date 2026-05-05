@@ -3,6 +3,8 @@
 #include <Utils/TimeUtils.h>
 #include <PoseSendRecvSimulator.h>
 
+#include <algorithm>
+
 using namespace quasar;
 
 PoseSendRecvSimulator::PoseSendRecvSimulator(PoseSendRecvSimulatorCreateParams params)
@@ -94,7 +96,7 @@ bool PoseSendRecvSimulator::recvPoseToRender(Pose& pose, double now) {
         predictionDebugInfo.secondPreviousTimestampUs = static_cast<int64_t>(secondPrevPose.send_timestamp);
         predictionDebugInfo.predictedTimestampUs = static_cast<int64_t>(timeutils::secondsToMicros(now + dtFuture + jitterPredicted));
 
-        if (!getPosePredicted(poseToSend, lastPose, prevPose, secondPrevPose, now + dtFuture + jitterPredicted)) {
+        if (!getPosePredicted(poseToSend, lastPose, prevPose, secondPrevPose, now + dtFuture + jitterPredicted, &predictionDebugInfo)) {
             return false;
         }
     }
@@ -214,7 +216,8 @@ double PoseSendRecvSimulator::calculateStdDev(const std::vector<double>& errors,
 bool PoseSendRecvSimulator::getPosePredicted(
     Pose& predictedPose,
     const Pose& latest, const Pose& previous, const Pose& secondPrevious,
-    double targetFutureTimeS)
+    double targetFutureTimeS,
+    PredictionDebugInfo* predictionDebugInfo)
 {
     double t2 = timeutils::microsToSeconds(secondPrevious.send_timestamp);
     double t1 = timeutils::microsToSeconds(previous.send_timestamp);
@@ -259,15 +262,26 @@ bool PoseSendRecvSimulator::getPosePredicted(
     float confidence = 1.0f - glm::smoothstep(0.02f, 0.06f, dtFuture);
     glm::vec3 finalPrediction = poseSmoothing ? glm::mix(filteredP0, rawPrediction, confidence) : rawPrediction;
 
+    glm::quat dqPrevious = glm::normalize(r1 * glm::inverse(r2));
     glm::quat dq = glm::normalize(r0 * glm::inverse(r1));
     float angle = glm::angle(dq);
     glm::vec3 axis = glm::axis(dq);
     if (glm::length(axis) < 1e-5f || glm::any(glm::isnan(axis))) axis = glm::vec3(0, 1, 0);
     float angularSpeed = angle / dt2;
+    const float previousAngularSpeed = glm::angle(dqPrevious) / dt1;
 
     angularSpeed = glm::clamp(angularSpeed, 0.0f, glm::radians(200.0f));
     float futureAngle = angularSpeed * dtFuture;
     futureAngle = glm::clamp(futureAngle, 0.0f, glm::radians(45.0f));
+
+    if (predictionDebugInfo != nullptr) {
+        const float velocityDisagreementRadiusM = 0.5f * glm::length(v2 - v1) * dtFuture;
+        const float accelerationRadiusM = 0.5f * glm::length(a) * dtFuture * dtFuture;
+        predictionDebugInfo->predictionPositionUncertaintyM =
+            std::max(velocityDisagreementRadiusM, accelerationRadiusM);
+        predictionDebugInfo->predictionRotationUncertaintyRad =
+            0.5f * std::abs(angularSpeed - previousAngularSpeed) * dtFuture;
+    }
 
     glm::quat deltaFuture = glm::angleAxis(futureAngle, axis);
     glm::quat predictedRotation = glm::normalize(deltaFuture * r0);
