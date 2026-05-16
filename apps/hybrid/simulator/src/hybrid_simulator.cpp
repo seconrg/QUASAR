@@ -734,7 +734,6 @@ int main(int argc, char** argv) {
         // }
         // // camera.setFovyDegrees(140.0f); // Use wide fov for local rendering
         renderStats = renderer.drawObjects(scene, camera);
-
         tonemapper.drawToScreen(renderer);
         if (!updateClient) {
             return;
