@@ -27,12 +27,80 @@
 #include <HoleFiller.h>
 
 #include <PoseSendRecvSimulator.h>
+#include <Utils/TimeUtils.h>
+
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <glm/gtx/matrix_decompose.hpp>
+
 using namespace quasar;
 
 static void glfw_error_callback(int error, const char* description)
 {
     fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
+
+namespace {
+
+struct PoseCsvInfo {
+    glm::vec3 position{0.0f};
+    glm::quat rotationQuat{1.0f, 0.0f, 0.0f, 0.0f};
+};
+
+PoseCsvInfo extractPoseCsvInfoFromViewMatrix(const glm::mat4& viewMatrix) {
+    PoseCsvInfo info;
+    glm::vec3 scale;
+    glm::vec3 skew;
+    glm::vec4 perspective;
+    glm::decompose(glm::inverse(viewMatrix), scale, info.rotationQuat, info.position, skew, perspective);
+    info.rotationQuat = glm::normalize(info.rotationQuat);
+    return info;
+}
+
+glm::vec2 computeScreenMotionDirectionPx(
+    const glm::mat4& previousViewMatrix,
+    const glm::mat4& currentViewMatrix,
+    const glm::mat4& projectionMatrix,
+    const glm::uvec2& viewportSize,
+    float probeDepthM)
+{
+    const glm::vec2 viewportCenter(
+        static_cast<float>(viewportSize.x) * 0.5f,
+        static_cast<float>(viewportSize.y) * 0.5f);
+    const float depth = std::max(0.01f, probeDepthM);
+
+    const glm::vec4 previousCenterWorld =
+        glm::inverse(previousViewMatrix) * glm::vec4(0.0f, 0.0f, -depth, 1.0f);
+    const glm::vec4 clip = projectionMatrix * currentViewMatrix * previousCenterWorld;
+    if (std::abs(clip.w) > 1e-5f) {
+        const glm::vec2 ndc = glm::vec2(clip) / clip.w;
+        const glm::vec2 projectedPx(
+            (ndc.x + 1.0f) * 0.5f * static_cast<float>(viewportSize.x),
+            (ndc.y + 1.0f) * 0.5f * static_cast<float>(viewportSize.y));
+        const glm::vec2 directionPx = projectedPx - viewportCenter;
+        if (std::isfinite(directionPx.x) && std::isfinite(directionPx.y)
+            && glm::length(directionPx) > 1e-4f)
+        {
+            return glm::normalize(directionPx);
+        }
+    }
+
+    const PoseCsvInfo previousPose = extractPoseCsvInfoFromViewMatrix(previousViewMatrix);
+    const PoseCsvInfo currentPose = extractPoseCsvInfoFromViewMatrix(currentViewMatrix);
+    const glm::vec3 cameraSpaceDelta =
+        glm::mat3(currentViewMatrix) * (currentPose.position - previousPose.position);
+    const glm::vec2 translationDirectionPx(cameraSpaceDelta.x, cameraSpaceDelta.y);
+    if (std::isfinite(translationDirectionPx.x) && std::isfinite(translationDirectionPx.y)
+        && glm::length(translationDirectionPx) > 1e-4f)
+    {
+        return glm::normalize(translationDirectionPx);
+    }
+
+    return glm::vec2(0.0f);
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
     Config config{};
@@ -49,6 +117,12 @@ int main(int argc, char** argv) {
     args::ValueFlag<std::string> sceneFileIn(parser, "scene", "Path to scene file", {'S', "scene"}, "../assets/scenes/sponza.json");
     args::Flag novsync(parser, "novsync", "Disable VSync", {'V', "novsync"}, false);
     args::Flag saveImages(parser, "save", "Save outputs to disk", {'I', "save-images"});
+    args::Flag noFrameDumpIn(
+        parser,
+        "no-frame-dump",
+        "Run save-images/camera-path mode without writing per-frame PNG captures",
+        {"no-frame-dump"},
+        false);
     args::ValueFlag<std::string> cameraPathFileIn(parser, "camera-path", "Path to camera animation file", {'C', "camera-path"});
     args::ValueFlag<int> numPosesIn(parser, "num-poses", "Number of poses to load from camera path", {'N', "num-poses"}, -1);
     args::ValueFlag<std::string> outputPathIn(parser, "output-path", "Directory to save outputs", {'o', "output-path"}, ".");
@@ -62,8 +136,54 @@ int main(int argc, char** argv) {
     args::ValueFlag<float> remoteFOVWideIn(parser, "remote-fov-wide", "Remote camera FOV in degrees for wide fov", {'W', "remote-fov-wide"}, 140.0f);
     args::ValueFlag<int> maxHiddenLayersIn(parser, "layers", "Max hidden layers", {'n', "max-hidden-layers"}, 3);
     args::ValueFlag<float> viewSphereDiameterIn(parser, "view-sphere-diameter", "Size of view sphere in m", {'B', "view-size"}, 0.5f);
+    args::Flag dynamicEdpEIn(
+        parser,
+        "dynamic-edp-e",
+        "Drive depth-peeling E from pose prediction uncertainty instead of always using viewSphereDiameter / 2",
+        {"dynamic-edp-e"});
+    args::ValueFlag<float> dynamicEdpEMinIn(
+        parser,
+        "meters",
+        "Minimum dynamic depth-peeling E radius",
+        {"dynamic-edp-e-min"},
+        0.005f);
+    args::ValueFlag<float> dynamicEdpEMaxIn(
+        parser,
+        "meters",
+        "Maximum dynamic depth-peeling E radius; negative means viewSphereDiameter / 2",
+        {"dynamic-edp-e-max"},
+        -1.0f);
+    args::ValueFlag<float> dynamicEdpEPositionScaleIn(
+        parser,
+        "scale",
+        "Scale applied to the position uncertainty term for dynamic depth-peeling E",
+        {"dynamic-edp-e-position-scale"},
+        1.0f);
+    args::ValueFlag<float> dynamicEdpERotationLeverArmIn(
+        parser,
+        "meters",
+        "World-space lever arm used to convert rotation uncertainty radians into dynamic depth-peeling E meters",
+        {"dynamic-edp-e-rotation-lever-arm"},
+        1.0f);
+    args::Flag dynamicEdpEDirectionalIn(
+        parser,
+        "dynamic-edp-e-directional",
+        "Use the full dynamic E along apparent screen-space motion and a smaller E perpendicular to it",
+        {"dynamic-edp-e-directional"});
+    args::ValueFlag<float> dynamicEdpENonMotionScaleIn(
+        parser,
+        "scale",
+        "Perpendicular scale for directional dynamic E, where 1 keeps the circular EDP radius",
+        {"dynamic-edp-e-non-motion-scale"},
+        0.5f);
     args::ValueFlag<std::string> wideFovDumpDirIn(
         parser, "path", "Dump wide-FOV tonemapped PNG per frame (empty = off)", {"wide-fov-dump-dir"}, "");
+    args::Flag noWideFovDumpIn(
+        parser,
+        "no-wide-fov-dump",
+        "Disable wide-FOV PNG/debug dumps while keeping CSV and bitrate logs",
+        {"no-wide-fov-dump"},
+        false);
     // args::ValueFlag<std::string> EIn(parser, "E", "Path to E's size for each depth peeling call", {'E', "E-path"}, "");
     
     try {
@@ -79,6 +199,9 @@ int main(int argc, char** argv) {
 
     if (verbose) spdlog::set_level(spdlog::level::debug);
 
+    const bool saveImagesEnabled = args::get(saveImages);
+    const bool frameDumpEnabled = saveImagesEnabled && !args::get(noFrameDumpIn);
+
     // Parse size
     std::string sizeStr = args::get(sizeIn);
     size_t pos = sizeStr.find('x');
@@ -91,8 +214,8 @@ int main(int argc, char** argv) {
     pos = rsizeStr.find('x');
     glm::uvec2 remoteWindowSize = glm::uvec2(std::stoi(rsizeStr.substr(0, pos)), std::stoi(rsizeStr.substr(pos + 1)));
 
-    config.enableVSync = !args::get(novsync) && !saveImages;
-    config.showWindow = !args::get(saveImages);
+    config.enableVSync = !args::get(novsync) && !saveImagesEnabled;
+    config.showWindow = !saveImagesEnabled;
 
     Path outputPath = Path(args::get(outputPathIn)); outputPath.mkdirRecursive();
     Path sceneFile = args::get(sceneFileIn);
@@ -172,12 +295,42 @@ int main(int argc, char** argv) {
     QuadSet quadSet(remoteWindowSize);
     float remoteFOVWide = args::get(remoteFOVWideIn);
     float viewSphereDiameter = args::get(viewSphereDiameterIn);
+    const float baseEdpERadius = viewSphereDiameter * 0.5f;
+    const bool dynamicEdpE = args::get(dynamicEdpEIn);
+    const float dynamicEdpEMin = std::max(0.0f, args::get(dynamicEdpEMinIn));
+    const float dynamicEdpEMaxArg = args::get(dynamicEdpEMaxIn);
+    const float dynamicEdpEMax = std::max(
+        dynamicEdpEMin,
+        dynamicEdpEMaxArg < 0.0f ? baseEdpERadius : dynamicEdpEMaxArg);
+    const float dynamicEdpEPositionScale = std::max(0.0f, args::get(dynamicEdpEPositionScaleIn));
+    const float dynamicEdpERotationLeverArm = std::max(0.0f, args::get(dynamicEdpERotationLeverArmIn));
+    const bool dynamicEdpEDirectional = args::get(dynamicEdpEDirectionalIn);
+    const float dynamicEdpENonMotionScale =
+        glm::clamp(args::get(dynamicEdpENonMotionScaleIn), 0.0f, 1.0f);
+
+    if (dynamicEdpE) {
+        spdlog::info(
+            "Dynamic EDP E: Enabled, base={:.6f}m, clamp=[{:.6f}, {:.6f}]m, position_scale={:.3f}, rotation_lever_arm={:.3f}m",
+            baseEdpERadius,
+            dynamicEdpEMin,
+            dynamicEdpEMax,
+            dynamicEdpEPositionScale,
+            dynamicEdpERotationLeverArm);
+        if (dynamicEdpEDirectional) {
+            spdlog::info(
+                "Directional dynamic EDP E: enabled, perpendicular_scale={:.3f}",
+                dynamicEdpENonMotionScale);
+        }
+    }
 
     std::string wideFovDumpDir = args::get(wideFovDumpDirIn);
+    if (args::get(noWideFovDumpIn)) {
+        wideFovDumpDir.clear();
+        spdlog::info("Wide-FOV image/debug dumping: disabled");
+    }
     // if (wideFovDumpDir.empty()) {
     //     wideFovDumpDir = outputPath.str() + "/widefov_dump";
     // }
-    
 
     HybridStreamer hybridStreamer(
         quadSet,
@@ -211,13 +364,18 @@ int main(int argc, char** argv) {
         .wrapT = GL_CLAMP_TO_EDGE,
         .minFilter = GL_LINEAR,
         .magFilter = GL_LINEAR,
-    }, renderer, holeFiller, outputPath, config.targetFramerate);
+    }, renderer, tonemapper, outputPath, config.targetFramerate);
     CameraAnimator cameraAnimator(cameraPathFile, numPoses);
 
-    if (saveImages) {
+    if (saveImagesEnabled) {
         recorder.setTargetFrameRate(-1 /* unlimited */);
         recorder.setFormat(Recorder::OutputFormat::PNG);
-        recorder.start();
+        if (frameDumpEnabled) {
+            recorder.start();
+        }
+        else {
+            spdlog::info("Frame image dumping disabled by --no-frame-dump; CSV and bitrate logs remain enabled.");
+        }
     }
 
     if (cameraPathFileIn) {
@@ -232,9 +390,9 @@ int main(int argc, char** argv) {
 
     bool sendRemoteFrame = true;
 
-    const double serverFPSValues[] = {0, 1, 5, 10, 15, 30};
-    const char* serverFPSLabels[] = {"0 FPS", "1 FPS", "5 FPS", "10 FPS", "15 FPS", "30 FPS"};
-    int serverFPSIndex = !cameraPathFileIn ? 0 : 5; // default to 30 FPS
+    const double serverFPSValues[] = {0, 1, 5, 10, 15, 60};
+    const char* serverFPSLabels[] = {"0 FPS", "1 FPS", "5 FPS", "10 FPS", "15 FPS", "60 FPS"};
+    int serverFPSIndex = !cameraPathFileIn ? 0 : 5; // default to 60 FPS
     double rerenderIntervalMs = serverFPSIndex == 0 ? 0.0 : MILLISECONDS_IN_SECOND / serverFPSValues[serverFPSIndex];
     float networkLatency = !cameraPathFileIn ? 0.0f : args::get(networkLatencyIn);
     float networkJitter = !cameraPathFileIn ? 0.0f : args::get(networkJitterIn);
@@ -248,6 +406,14 @@ int main(int argc, char** argv) {
         .poseSmoothing = poseSmoothing,
     });
 
+    std::ofstream dynamicEdpLogFile((outputPath / "hybrid_dynamic_edp.csv").str());
+    dynamicEdpLogFile
+        << "frame_id,prediction_used,"
+        << "latest_pose_timestamp_us,prev_pose_timestamp_us,prev_but_two_pose_timestamp_us,predicted_pose_timestamp_us,"
+        << "position_uncertainty_m,rotation_uncertainty_rad,dynamic_edp_e_m,"
+        << "dynamic_edp_direction_x,dynamic_edp_direction_y,dynamic_edp_perpendicular_scale"
+        << std::endl;
+
     RenderStats renderStats;
     FrameRateWindow frameRateWindow;
     FrameCaptureWindow frameCaptureWindow(recorder, ImVec2(430, 270), outputPath);
@@ -256,7 +422,7 @@ int main(int argc, char** argv) {
     SceneWindow sceneWindow(scene, ImVec2(430, 800));
     CameraHeader cameraHeader(camera);
     guiManager->onRender([&](double now, double dt) {
-        static bool showUI = !saveImages;
+        static bool showUI = !saveImagesEnabled;
         static bool showMeshCapture = false;
 
         ImGui::BeginMainMenuBar();
@@ -377,7 +543,13 @@ int main(int argc, char** argv) {
 
     double totalDT = 0.0;
     double lasttotalRenderTime = -INFINITY;
-    bool updateClient = !saveImages;
+    bool updateClient = !saveImagesEnabled;
+    PoseSendRecvSimulator::PredictionDebugInfo activePredictionDebugInfo;
+    float currentDynamicEdpE = baseEdpERadius;
+    glm::vec2 currentDynamicEdpDirectionPx(0.0f);
+    float currentDynamicEdpNonMotionScale = 1.0f;
+    glm::mat4 previousDynamicEdpViewMatrix = remoteCamera.getViewMatrix();
+    bool hasPreviousDynamicEdpViewMatrix = false;
     app.onRender([&](double now, double dt) {
         // Handle mouse input
         if (!(ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantCaptureMouse)) {
@@ -451,6 +623,7 @@ int main(int argc, char** argv) {
                 Pose clientPosePred;
                 if (poseSendRecvSimulator.recvPoseToRender(clientPosePred, now)) {
                     remoteCamera.setViewMatrix(clientPosePred.mono.view);
+                    activePredictionDebugInfo = poseSendRecvSimulator.getLastPredictionDebugInfo();
                 }
                 // If we do not have a new pose, just send a new frame with the old pose
             }
@@ -463,8 +636,73 @@ int main(int argc, char** argv) {
             //     spdlog::info("Set View Sphere Diameter to {}", E);
             // }
 
+            if (dynamicEdpE) {
+                currentDynamicEdpE = baseEdpERadius;
+                currentDynamicEdpDirectionPx = glm::vec2(0.0f);
+                currentDynamicEdpNonMotionScale = 1.0f;
+                if (activePredictionDebugInfo.valid && activePredictionDebugInfo.usedPrediction) {
+                    const float predictionUncertaintyM =
+                        dynamicEdpEPositionScale * activePredictionDebugInfo.predictionPositionUncertaintyM
+                        + dynamicEdpERotationLeverArm * activePredictionDebugInfo.predictionRotationUncertaintyRad;
+                    currentDynamicEdpE = glm::clamp(predictionUncertaintyM, dynamicEdpEMin, dynamicEdpEMax);
+                }
+                remoteRendererDP.setEOverride(currentDynamicEdpE);
+                if (dynamicEdpEDirectional && hasPreviousDynamicEdpViewMatrix) {
+                    currentDynamicEdpDirectionPx = computeScreenMotionDirectionPx(
+                        previousDynamicEdpViewMatrix,
+                        remoteCamera.getViewMatrix(),
+                        remoteCamera.getProjectionMatrix(),
+                        remoteWindowSize,
+                        std::max(0.01f, dynamicEdpERotationLeverArm));
+                    if (glm::length(currentDynamicEdpDirectionPx) > 1e-4f) {
+                        currentDynamicEdpNonMotionScale = dynamicEdpENonMotionScale;
+                        remoteRendererDP.setEAnisotropy(currentDynamicEdpDirectionPx, currentDynamicEdpNonMotionScale);
+                    }
+                    else {
+                        remoteRendererDP.clearEAnisotropy();
+                    }
+                }
+                else {
+                    remoteRendererDP.clearEAnisotropy();
+                }
+                spdlog::info(
+                    "Dynamic EDP E for Hybrid frame {}: E={:.6f}m, base={:.6f}m, pos_uncertainty={:.6f}m, rot_uncertainty={:.6f}rad, direction=({:.3f}, {:.3f}), perpendicular_scale={:.3f}",
+                    hybridStreamer.frameID + 1,
+                    currentDynamicEdpE,
+                    baseEdpERadius,
+                    activePredictionDebugInfo.predictionPositionUncertaintyM,
+                    activePredictionDebugInfo.predictionRotationUncertaintyRad,
+                    currentDynamicEdpDirectionPx.x,
+                    currentDynamicEdpDirectionPx.y,
+                    currentDynamicEdpNonMotionScale);
+            }
+            else {
+                currentDynamicEdpE = baseEdpERadius;
+                currentDynamicEdpDirectionPx = glm::vec2(0.0f);
+                currentDynamicEdpNonMotionScale = 1.0f;
+                remoteRendererDP.clearEOverride();
+                remoteRendererDP.clearEAnisotropy();
+            }
+
+            dynamicEdpLogFile
+                << (hybridStreamer.frameID + 1) << ","
+                << (activePredictionDebugInfo.usedPrediction ? 1 : 0) << ","
+                << activePredictionDebugInfo.latestTimestampUs << ","
+                << activePredictionDebugInfo.previousTimestampUs << ","
+                << activePredictionDebugInfo.secondPreviousTimestampUs << ","
+                << activePredictionDebugInfo.predictedTimestampUs << ","
+                << activePredictionDebugInfo.predictionPositionUncertaintyM << ","
+                << activePredictionDebugInfo.predictionRotationUncertaintyRad << ","
+                << currentDynamicEdpE << ","
+                << currentDynamicEdpDirectionPx.x << ","
+                << currentDynamicEdpDirectionPx.y << ","
+                << currentDynamicEdpNonMotionScale
+                << std::endl;
+
             // Generate new frame
             hybridStreamer.generateFrame();
+            previousDynamicEdpViewMatrix = remoteCamera.getViewMatrix();
+            hasPreviousDynamicEdpViewMatrix = true;
 
             spdlog::info("======================================================");
             // spdlog::info("Rendering Time: {:.3f}ms", hybridStreamer.stats.totalRenderTimeMs);
@@ -508,11 +746,15 @@ int main(int argc, char** argv) {
         poseSendRecvSimulator.accumulateError(camera, remoteCamera);
 
         if (cameraPathFileIn) {
-            recorder.captureFrame(camera);
+            if (frameDumpEnabled) {
+                recorder.captureFrame(camera);
+            }
 
             if (!cameraAnimator.running) {
                 poseSendRecvSimulator.printErrors();
-                recorder.stop();
+                if (frameDumpEnabled) {
+                    recorder.stop();
+                }
                 window->close();
             }
         }

@@ -4,6 +4,7 @@
 #include <Renderers/DeferredRenderer.h>
 #include <RenderTargets/GBuffer.h>
 #include <RenderTargets/FrameRenderTarget.h>
+#include <glm/glm.hpp>
 
 namespace quasar {
 
@@ -13,6 +14,8 @@ public:
     float viewSphereDiameter = 0.5f;
     float edpDelta = 0.0005f;
     float eOverride = -1.0f;
+    glm::vec2 eScreenDirection = glm::vec2(1.0f, 0.0f);
+    float ePerpendicularScale = 1.0f;
 
     std::vector<FrameRenderTarget> peelingLayers;
 
@@ -22,6 +25,8 @@ public:
     void setViewSphereDiameter(float viewSphereDiameter) { this->viewSphereDiameter = viewSphereDiameter; }
     void setEOverride(float eRadius) { eOverride = eRadius; }
     void clearEOverride() { eOverride = -1.0f; }
+    void setEAnisotropy(const glm::vec2& screenDirection, float perpendicularScale);
+    void clearEAnisotropy();
     float getEffectiveE() const { return eOverride >= 0.0f ? eOverride : viewSphereDiameter / 2.0f; }
     virtual void setScreenShaderUniforms(const Shader& screenShader) override;
 

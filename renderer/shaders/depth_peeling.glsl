@@ -4,6 +4,8 @@ uniform usampler2D prevIDMap;
 
 uniform float E;
 uniform float edpDelta;
+uniform vec2 edpDirection;
+uniform float edpPerpendicularScale;
 uniform int layerIndex;
 
 // Adapted from https://github.com/cgskku/pvhv/blob/main/shaders/edp.frag
@@ -38,23 +40,32 @@ bool inPVHV(ivec2 pixelCoords, vec3 fragViewPos, uvec4 q) {
 
     uint q_item	= q.w;
 
-    // If the sampling circle is fully inside the image, return true as soon as a visible sample is found
-    // If the circle reaches outside the image, require at least one visible sample inside the image to consider visible
+    vec2 majorDirection = length(edpDirection) > 1e-5 ? normalize(edpDirection) : vec2(1.0, 0.0);
+    vec2 minorDirection = vec2(-majorDirection.y, majorDirection.x);
+    float minorScale = clamp(edpPerpendicularScale, 0.0, 1.0);
+    vec2 ellipseHalfExtent = abs(majorDirection) * R + abs(minorDirection) * (R * minorScale);
+
+    // If the sampling footprint is fully inside the image, return true as soon as a visible sample is found.
+    // If the footprint reaches outside the image, require at least one visible sample inside the image to consider visible.
     vec2 fragCoord = vec2(pixelCoords);
-    bool lcocInside = (fragCoord.x - R >= 0.0 && fragCoord.x + R < width &&
-                       fragCoord.y - R >= 0.0 && fragCoord.y + R < height);
+    bool lcocInside = (fragCoord.x - ellipseHalfExtent.x >= 0.0 && fragCoord.x + ellipseHalfExtent.x < width &&
+                       fragCoord.y - ellipseHalfExtent.y >= 0.0 && fragCoord.y + ellipseHalfExtent.y < height);
 
     bool sampleVisible = false;
     for (int i = 0; i < EDP_SAMPLES; i++) {
         float angle = float(i) * 2.0 * PI / EDP_SAMPLES;
-        vec2 offset = vec2(R * cos(angle), R * sin(angle));
+        vec2 offset = majorDirection * (R * cos(angle)) + minorDirection * (R * minorScale * sin(angle));
         vec2 sampleCoord = fragCoord + offset;
 
         // Skip samples that fall outside the image
         if (sampleCoord.x < 0.0 || sampleCoord.x >= width || sampleCoord.y < 0.0 || sampleCoord.y >= height)
             continue;
 
-        uvec4 w = texelFetch(prevIDMap, ivec2(round(sampleCoord)), 0);
+        ivec2 samplePixel = clamp(
+            ivec2(round(sampleCoord)),
+            ivec2(0),
+            ivec2(width - 1, height - 1));
+        uvec4 w = texelFetch(prevIDMap, samplePixel, 0);
 		uint w_item = w.w;
 
         float sampleDepthNormalized = uintBitsToFloat(w.z);

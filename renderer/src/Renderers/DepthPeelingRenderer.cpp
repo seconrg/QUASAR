@@ -5,21 +5,27 @@ using namespace quasar;
 
 namespace {
 
-void setEDPUniforms(float eRadius, float edpDelta) {
+void setEDPUniforms(float eRadius, float edpDelta, const glm::vec2& eScreenDirection, float ePerpendicularScale) {
     if (LitMaterial::deferredShader != nullptr) {
         LitMaterial::deferredShader->bind();
         LitMaterial::deferredShader->setFloat("E", eRadius);
         LitMaterial::deferredShader->setFloat("edpDelta", edpDelta);
+        LitMaterial::deferredShader->setVec2("edpDirection", eScreenDirection);
+        LitMaterial::deferredShader->setFloat("edpPerpendicularScale", ePerpendicularScale);
     }
     if (LitMaterial::forwardShader != nullptr) {
         LitMaterial::forwardShader->bind();
         LitMaterial::forwardShader->setFloat("E", eRadius);
         LitMaterial::forwardShader->setFloat("edpDelta", edpDelta);
+        LitMaterial::forwardShader->setVec2("edpDirection", eScreenDirection);
+        LitMaterial::forwardShader->setFloat("edpPerpendicularScale", ePerpendicularScale);
     }
     if (UnlitMaterial::shader != nullptr) {
         UnlitMaterial::shader->bind();
         UnlitMaterial::shader->setFloat("E", eRadius);
         UnlitMaterial::shader->setFloat("edpDelta", edpDelta);
+        UnlitMaterial::shader->setVec2("edpDirection", eScreenDirection);
+        UnlitMaterial::shader->setFloat("edpPerpendicularScale", ePerpendicularScale);
     }
 }
 
@@ -65,6 +71,18 @@ DepthPeelingRenderer::DepthPeelingRenderer(const Config& config, uint maxLayers,
     for (int i = 0; i < maxLayers; i++) {
         peelingLayers.emplace_back(params);
     }
+}
+
+void DepthPeelingRenderer::setEAnisotropy(const glm::vec2& screenDirection, float perpendicularScale) {
+    eScreenDirection = glm::length(screenDirection) > 1e-5f
+        ? glm::normalize(screenDirection)
+        : glm::vec2(1.0f, 0.0f);
+    ePerpendicularScale = glm::clamp(perpendicularScale, 0.0f, 1.0f);
+}
+
+void DepthPeelingRenderer::clearEAnisotropy() {
+    eScreenDirection = glm::vec2(1.0f, 0.0f);
+    ePerpendicularScale = 1.0f;
 }
 
 void DepthPeelingRenderer::resize(uint width, uint height) {
@@ -161,7 +179,7 @@ RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera
         pipeline.apply();
 
         if (edp) {
-            setEDPUniforms(getEffectiveE(), edpDelta);
+            setEDPUniforms(getEffectiveE(), edpDelta, eScreenDirection, ePerpendicularScale);
         }
 
         RenderStats stats;
@@ -189,7 +207,7 @@ RenderStats DepthPeelingRenderer::drawObjectsNoLighting(Scene& scene, const Came
     pipeline.apply();
 
     if (edp) {
-        setEDPUniforms(getEffectiveE(), edpDelta);
+        setEDPUniforms(getEffectiveE(), edpDelta, eScreenDirection, ePerpendicularScale);
     }
 
     RenderStats stats;
