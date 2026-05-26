@@ -1,6 +1,7 @@
 #include "RenderTargets/FrameRenderTarget.h"
 #include <Streamers/QUASARStreamer.h>
 
+#include <Cameras/PerspectiveCamera.h>
 #include <Path.h>
 #include <Utils/FileIO.h>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -10,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -246,6 +248,50 @@ bool readDepthPixelsFromDepthStencilTexture(
     return true;
 }
 
+float uintBitsToFloat(uint32_t value) {
+    float result = 0.0f;
+    std::memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
+bool readRGBA32UITexture(const Texture& texture, std::vector<glm::uvec4>& pixels) {
+    pixels.resize(static_cast<size_t>(texture.width) * static_cast<size_t>(texture.height));
+
+    GLint previousReadFramebuffer = 0;
+    GLint previousReadBuffer = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+    glGetIntegerv(GL_READ_BUFFER, &previousReadBuffer);
+
+    GLuint readFramebuffer = 0;
+    glGenFramebuffers(1, &readFramebuffer);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebuffer);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture.ID, 0);
+
+    const GLenum status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        spdlog::warn("Failed to read RGBA32UI texture: framebuffer status={}", status);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+        glReadBuffer(static_cast<GLenum>(previousReadBuffer));
+        glDeleteFramebuffers(1, &readFramebuffer);
+        return false;
+    }
+
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(
+        0,
+        0,
+        texture.width,
+        texture.height,
+        GL_RGBA_INTEGER,
+        GL_UNSIGNED_INT,
+        pixels.data());
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+    glReadBuffer(static_cast<GLenum>(previousReadBuffer));
+    glDeleteFramebuffers(1, &readFramebuffer);
+    return true;
+}
+
 bool getFrameRenderTargetCornerDepths(const FrameRenderTarget& frameRT, std::array<float, 4>& outDepths) {
     if (frameRT.width == 0 || frameRT.height == 0) {
         return false;
@@ -333,6 +379,69 @@ void logFrameRenderTargetDepthRange(const FrameRenderTarget& frameRT, const char
         label,
         minDepth,
         maxDepth);
+}
+
+void logFrameRenderTargetIDDepthStats(
+    const FrameRenderTarget& frameRT,
+    const quasar::PerspectiveCamera& camera,
+    const char* label)
+{
+    if (frameRT.width == 0 || frameRT.height == 0) {
+        spdlog::warn("{} ID-depth stats skipped because frame RT has invalid size {}x{}", label, frameRT.width, frameRT.height);
+        return;
+    }
+
+    std::vector<glm::uvec4> idPixels;
+    if (!readRGBA32UITexture(frameRT.idTexture, idPixels)) {
+        spdlog::warn("{} ID-depth stats skipped because idTexture readback failed", label);
+        return;
+    }
+
+    size_t validPixels = 0;
+    float minNormalizedDepth = std::numeric_limits<float>::infinity();
+    float maxNormalizedDepth = -std::numeric_limits<float>::infinity();
+    double sumNormalizedDepth = 0.0;
+    float minViewDepthM = std::numeric_limits<float>::infinity();
+    float maxViewDepthM = -std::numeric_limits<float>::infinity();
+    double sumViewDepthM = 0.0;
+    const float nearPlane = camera.getNear();
+    const float farPlane = camera.getFar();
+
+    for (const glm::uvec4& idPixel : idPixels) {
+        const float normalizedDepth = uintBitsToFloat(idPixel.z);
+        if (!std::isfinite(normalizedDepth) || normalizedDepth <= 0.0f || normalizedDepth >= 0.9999f) {
+            continue;
+        }
+
+        const float viewDepthM = glm::mix(nearPlane, farPlane, normalizedDepth);
+        if (!std::isfinite(viewDepthM)) {
+            continue;
+        }
+
+        validPixels++;
+        minNormalizedDepth = std::min(minNormalizedDepth, normalizedDepth);
+        maxNormalizedDepth = std::max(maxNormalizedDepth, normalizedDepth);
+        sumNormalizedDepth += normalizedDepth;
+        minViewDepthM = std::min(minViewDepthM, viewDepthM);
+        maxViewDepthM = std::max(maxViewDepthM, viewDepthM);
+        sumViewDepthM += viewDepthM;
+    }
+
+    if (validPixels == 0) {
+        spdlog::warn("{} ID-depth stats skipped because no valid ID-depth pixels were found", label);
+        return;
+    }
+
+    spdlog::info(
+        "{} ID-depth stats: valid_pixels={}, normalized[min={:.9f}, max={:.9f}, avg={:.9f}], view_depth_m[min={:.6f}, max={:.6f}, avg={:.6f}]",
+        label,
+        validPixels,
+        minNormalizedDepth,
+        maxNormalizedDepth,
+        sumNormalizedDepth / static_cast<double>(validPixels),
+        minViewDepthM,
+        maxViewDepthM,
+        sumViewDepthM / static_cast<double>(validPixels));
 }
 
 glm::mat3 buildAtwStyleCurrentToPreviousHomography(
@@ -1541,9 +1650,21 @@ QUASARStreamer::QUASARStreamer(
         spdlog::info("Created QUASARStreamer that sends to URL: tcp://{}", proxiesURL);
     }
 
-    const std::string outputDir = getOutputDirFromWideFovDumpDir(wideFovImageDumpDir);
+    const std::string wideFovOutputDir = getOutputDirFromWideFovDumpDir(wideFovImageDumpDir);
+    std::string csvOutputDir = wideFovOutputDir;
+    if (csvOutputDir.empty()) {
+        csvOutputDir = datasetOutputDir;
+    }
+    if (!csvOutputDir.empty()) {
+        Path(csvOutputDir).mkdirRecursive();
+    }
+    else {
+        spdlog::warn("QUASAR stats output directory is empty; writing CSVs relative to the current working directory");
+    }
 
-    quasarStatsCSVFileName = outputDir + "/quasar_stats.csv";
+    const Path csvOutputPath(csvOutputDir.empty() ? "." : csvOutputDir);
+
+    quasarStatsCSVFileName = (csvOutputPath / "quasar_stats.csv").str();
     quasarStatsCSVFile.open(quasarStatsCSVFileName);
     quasarStatsCSVFile << "frame_id";
     quasarStatsCSVFile << ",visible_render";
@@ -1562,7 +1683,7 @@ QUASARStreamer::QUASARStreamer(
     
     // add output dir to bandwidth stats
 
-    bandwidthStatsCSVFileName = outputDir + "/quasar_streamer_bitrate.csv";
+    bandwidthStatsCSVFileName = (csvOutputPath / "quasar_streamer_bitrate.csv").str();
     bandwidthStatsCSVFile.open(bandwidthStatsCSVFileName);
     bandwidthStatsCSVFile << "frameID";
     bandwidthStatsCSVFile << ",atlas_bitrate";
@@ -1588,7 +1709,7 @@ QUASARStreamer::QUASARStreamer(
         cornerDepthDatasetCSVFile.close();
     }
 
-    if (trimWideFov && !outputDir.empty()) {
+    if (trimWideFov && !wideFovOutputDir.empty()) {
         Path reprojectionMaskCompareDir = getReprojectionMaskCompareDir(wideFovImageDumpDir);
         reprojectionMaskCompareDir.mkdirRecursive();
         std::ofstream posePairsCsv((reprojectionMaskCompareDir / "pose_pairs.csv").str());
@@ -1788,6 +1909,7 @@ RenderStats QUASARStreamer::generateFrame(
             remoteRenderer.copyToFrameRT(renderTargetToUse);
             remoteRenderer.gBuffer.blitDepth(renderTargetToUse);
             logFrameRenderTargetDepthRange(renderTargetToUse, "Normal-view render");
+            logFrameRenderTargetIDDepthStats(renderTargetToUse, remoteCameraToUse, "Normal-view render");
             logFrameRenderTargetCornerDepths(renderTargetToUse, "Normal-view render");
             appendCornerDepthRow(
                 createResidualFrame ? "normal_view_residual_pose" : "normal_view",

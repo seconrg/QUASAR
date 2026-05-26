@@ -1,17 +1,33 @@
 #include <Cameras/VRCamera.h>
 #include <Renderers/DepthPeelingRenderer.h>
 
+#include <algorithm>
+
 using namespace quasar;
 
 namespace {
 
-void setEDPUniforms(float eRadius, float edpDelta, const glm::vec2& eScreenDirection, float ePerpendicularScale) {
+void setEDPUniforms(
+    float eRadius,
+    float edpDelta,
+    const glm::vec2& eScreenDirection,
+    float ePerpendicularScale,
+    bool eScreenSpaceFootprint,
+    float eScreenMajorRadiusPx,
+    float eScreenMinorRadiusPx,
+    bool eViewOffsetFootprint,
+    const glm::vec3& eViewOffsetUncertaintyM) {
     if (LitMaterial::deferredShader != nullptr) {
         LitMaterial::deferredShader->bind();
         LitMaterial::deferredShader->setFloat("E", eRadius);
         LitMaterial::deferredShader->setFloat("edpDelta", edpDelta);
         LitMaterial::deferredShader->setVec2("edpDirection", eScreenDirection);
         LitMaterial::deferredShader->setFloat("edpPerpendicularScale", ePerpendicularScale);
+        LitMaterial::deferredShader->setBool("edpScreenSpaceFootprint", eScreenSpaceFootprint);
+        LitMaterial::deferredShader->setFloat("edpScreenMajorRadiusPx", eScreenMajorRadiusPx);
+        LitMaterial::deferredShader->setFloat("edpScreenMinorRadiusPx", eScreenMinorRadiusPx);
+        LitMaterial::deferredShader->setBool("edpViewOffsetFootprint", eViewOffsetFootprint);
+        LitMaterial::deferredShader->setVec3("edpViewOffsetUncertaintyM", eViewOffsetUncertaintyM);
     }
     if (LitMaterial::forwardShader != nullptr) {
         LitMaterial::forwardShader->bind();
@@ -19,6 +35,11 @@ void setEDPUniforms(float eRadius, float edpDelta, const glm::vec2& eScreenDirec
         LitMaterial::forwardShader->setFloat("edpDelta", edpDelta);
         LitMaterial::forwardShader->setVec2("edpDirection", eScreenDirection);
         LitMaterial::forwardShader->setFloat("edpPerpendicularScale", ePerpendicularScale);
+        LitMaterial::forwardShader->setBool("edpScreenSpaceFootprint", eScreenSpaceFootprint);
+        LitMaterial::forwardShader->setFloat("edpScreenMajorRadiusPx", eScreenMajorRadiusPx);
+        LitMaterial::forwardShader->setFloat("edpScreenMinorRadiusPx", eScreenMinorRadiusPx);
+        LitMaterial::forwardShader->setBool("edpViewOffsetFootprint", eViewOffsetFootprint);
+        LitMaterial::forwardShader->setVec3("edpViewOffsetUncertaintyM", eViewOffsetUncertaintyM);
     }
     if (UnlitMaterial::shader != nullptr) {
         UnlitMaterial::shader->bind();
@@ -26,6 +47,11 @@ void setEDPUniforms(float eRadius, float edpDelta, const glm::vec2& eScreenDirec
         UnlitMaterial::shader->setFloat("edpDelta", edpDelta);
         UnlitMaterial::shader->setVec2("edpDirection", eScreenDirection);
         UnlitMaterial::shader->setFloat("edpPerpendicularScale", ePerpendicularScale);
+        UnlitMaterial::shader->setBool("edpScreenSpaceFootprint", eScreenSpaceFootprint);
+        UnlitMaterial::shader->setFloat("edpScreenMajorRadiusPx", eScreenMajorRadiusPx);
+        UnlitMaterial::shader->setFloat("edpScreenMinorRadiusPx", eScreenMinorRadiusPx);
+        UnlitMaterial::shader->setBool("edpViewOffsetFootprint", eViewOffsetFootprint);
+        UnlitMaterial::shader->setVec3("edpViewOffsetUncertaintyM", eViewOffsetUncertaintyM);
     }
 }
 
@@ -83,6 +109,28 @@ void DepthPeelingRenderer::setEAnisotropy(const glm::vec2& screenDirection, floa
 void DepthPeelingRenderer::clearEAnisotropy() {
     eScreenDirection = glm::vec2(1.0f, 0.0f);
     ePerpendicularScale = 1.0f;
+}
+
+void DepthPeelingRenderer::setEScreenSpaceFootprint(float majorRadiusPx, float minorRadiusPx) {
+    eScreenSpaceFootprint = true;
+    eScreenMajorRadiusPx = std::max(0.0f, majorRadiusPx);
+    eScreenMinorRadiusPx = std::max(0.0f, minorRadiusPx);
+}
+
+void DepthPeelingRenderer::clearEScreenSpaceFootprint() {
+    eScreenSpaceFootprint = false;
+    eScreenMajorRadiusPx = 0.0f;
+    eScreenMinorRadiusPx = 0.0f;
+}
+
+void DepthPeelingRenderer::setEViewOffsetFootprint(const glm::vec3& viewOffsetUncertaintyM) {
+    eViewOffsetFootprint = true;
+    eViewOffsetUncertaintyM = viewOffsetUncertaintyM;
+}
+
+void DepthPeelingRenderer::clearEViewOffsetFootprint() {
+    eViewOffsetFootprint = false;
+    eViewOffsetUncertaintyM = glm::vec3(0.0f);
 }
 
 void DepthPeelingRenderer::resize(uint width, uint height) {
@@ -179,7 +227,16 @@ RenderStats DepthPeelingRenderer::drawObjects(Scene& scene, const Camera& camera
         pipeline.apply();
 
         if (edp) {
-            setEDPUniforms(getEffectiveE(), edpDelta, eScreenDirection, ePerpendicularScale);
+            setEDPUniforms(
+                getEffectiveE(),
+                edpDelta,
+                eScreenDirection,
+                ePerpendicularScale,
+                eScreenSpaceFootprint,
+                eScreenMajorRadiusPx,
+                eScreenMinorRadiusPx,
+                eViewOffsetFootprint,
+                eViewOffsetUncertaintyM);
         }
 
         RenderStats stats;
@@ -207,7 +264,16 @@ RenderStats DepthPeelingRenderer::drawObjectsNoLighting(Scene& scene, const Came
     pipeline.apply();
 
     if (edp) {
-        setEDPUniforms(getEffectiveE(), edpDelta, eScreenDirection, ePerpendicularScale);
+        setEDPUniforms(
+            getEffectiveE(),
+            edpDelta,
+            eScreenDirection,
+            ePerpendicularScale,
+            eScreenSpaceFootprint,
+            eScreenMajorRadiusPx,
+            eScreenMinorRadiusPx,
+            eViewOffsetFootprint,
+            eViewOffsetUncertaintyM);
     }
 
     RenderStats stats;

@@ -16,6 +16,11 @@ public:
     float eOverride = -1.0f;
     glm::vec2 eScreenDirection = glm::vec2(1.0f, 0.0f);
     float ePerpendicularScale = 1.0f;
+    bool eScreenSpaceFootprint = false;
+    float eScreenMajorRadiusPx = 0.0f;
+    float eScreenMinorRadiusPx = 0.0f;
+    bool eViewOffsetFootprint = false;
+    glm::vec3 eViewOffsetUncertaintyM{0.0f};
 
     std::vector<FrameRenderTarget> peelingLayers;
 
@@ -27,6 +32,10 @@ public:
     void clearEOverride() { eOverride = -1.0f; }
     void setEAnisotropy(const glm::vec2& screenDirection, float perpendicularScale);
     void clearEAnisotropy();
+    void setEScreenSpaceFootprint(float majorRadiusPx, float minorRadiusPx);
+    void clearEScreenSpaceFootprint();
+    void setEViewOffsetFootprint(const glm::vec3& viewOffsetUncertaintyM);
+    void clearEViewOffsetFootprint();
     float getEffectiveE() const { return eOverride >= 0.0f ? eOverride : viewSphereDiameter / 2.0f; }
     virtual void setScreenShaderUniforms(const Shader& screenShader) override;
 

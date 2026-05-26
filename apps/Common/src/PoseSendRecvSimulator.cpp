@@ -274,15 +274,6 @@ bool PoseSendRecvSimulator::getPosePredicted(
     float futureAngle = angularSpeed * dtFuture;
     futureAngle = glm::clamp(futureAngle, 0.0f, glm::radians(45.0f));
 
-    if (predictionDebugInfo != nullptr) {
-        const float velocityDisagreementRadiusM = 0.5f * glm::length(v2 - v1) * dtFuture;
-        const float accelerationRadiusM = 0.5f * glm::length(a) * dtFuture * dtFuture;
-        predictionDebugInfo->predictionPositionUncertaintyM =
-            std::max(velocityDisagreementRadiusM, accelerationRadiusM);
-        predictionDebugInfo->predictionRotationUncertaintyRad =
-            0.5f * std::abs(angularSpeed - previousAngularSpeed) * dtFuture;
-    }
-
     glm::quat deltaFuture = glm::angleAxis(futureAngle, axis);
     glm::quat predictedRotation = glm::normalize(deltaFuture * r0);
 
@@ -291,6 +282,20 @@ bool PoseSendRecvSimulator::getPosePredicted(
         if (rotationHistory.size() > maxRotationHistorySize) rotationHistory.pop_front();
         return rotationHistory;
     }()) : predictedRotation;
+
+    if (predictionDebugInfo != nullptr) {
+        const glm::vec3 velocityDisagreementRadiusWorldM = 0.5f * (v2 - v1) * dtFuture;
+        const glm::vec3 accelerationRadiusWorldM = 0.5f * a * dtFuture * dtFuture;
+        const float velocityDisagreementRadiusM = glm::length(velocityDisagreementRadiusWorldM);
+        const float accelerationRadiusM = glm::length(accelerationRadiusWorldM);
+        predictionDebugInfo->predictionPositionUncertaintyM =
+            std::max(velocityDisagreementRadiusM, accelerationRadiusM);
+        predictionDebugInfo->predictionPositionUncertaintyViewM = glm::max(
+            glm::abs(glm::inverse(finalRotation) * velocityDisagreementRadiusWorldM),
+            glm::abs(glm::inverse(finalRotation) * accelerationRadiusWorldM));
+        predictionDebugInfo->predictionRotationUncertaintyRad =
+            0.5f * std::abs(angularSpeed - previousAngularSpeed) * dtFuture;
+    }
 
     glm::mat4 predictedTransform = glm::translate(glm::mat4(1.0f), finalPrediction) * glm::mat4_cast(finalRotation);
     glm::mat4 predictedView = glm::inverse(predictedTransform);

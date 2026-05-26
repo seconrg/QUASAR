@@ -31,14 +31,17 @@
 #include <Utils/TimeUtils.h>
 
 #include <glad/glad.h>
+#include <glm/gtx/component_wise.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <deque>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -173,6 +176,503 @@ PoseCsvInfo extractPoseCsvInfoFromViewMatrix(const glm::mat4& viewMatrix) {
     return info;
 }
 
+PoseCsvInfo poseCsvInfoFromAnimatorPose(const CameraAnimator::CameraPose& pose) {
+    PoseCsvInfo info;
+    info.position = pose.position;
+    info.rotationQuat = glm::normalize(pose.rotation);
+    info.eulerRotationDegrees = glm::degrees(glm::eulerAngles(info.rotationQuat));
+    return info;
+}
+
+float quaternionAngularDistanceRad(const glm::quat& a, const glm::quat& b) {
+    const glm::quat normalizedA = glm::normalize(a);
+    const glm::quat normalizedB = glm::normalize(b);
+    const float dotAbs = glm::clamp(std::abs(glm::dot(normalizedA, normalizedB)), 0.0f, 1.0f);
+    return 2.0f * std::acos(dotAbs);
+}
+
+struct MotionProjectionFeatures {
+    bool valid = false;
+    glm::vec3 cameraFrameTranslation{0.0f};
+    glm::vec2 projectedMotionPx{0.0f};
+    float projectedMotionMagnitudePx = 0.0f;
+    float representativeDepthM = 1.0f;
+};
+
+MotionProjectionFeatures computeMotionProjectionFeatures(
+    const glm::mat4& sourceViewMatrix,
+    const glm::mat4& targetViewMatrix,
+    const glm::mat4& projectionMatrix,
+    const glm::uvec2& viewportSize,
+    float representativeDepthM)
+{
+    MotionProjectionFeatures features;
+    features.representativeDepthM = std::max(0.01f, representativeDepthM);
+
+    const PoseCsvInfo sourcePose = extractPoseCsvInfoFromViewMatrix(sourceViewMatrix);
+    const PoseCsvInfo targetPose = extractPoseCsvInfoFromViewMatrix(targetViewMatrix);
+    const glm::vec3 worldTranslation = targetPose.position - sourcePose.position;
+    features.cameraFrameTranslation = glm::inverse(sourcePose.rotationQuat) * worldTranslation;
+
+    const float fx = std::abs(projectionMatrix[0][0]) * static_cast<float>(viewportSize.x) * 0.5f;
+    const float fy = std::abs(projectionMatrix[1][1]) * static_cast<float>(viewportSize.y) * 0.5f;
+    features.projectedMotionPx = glm::vec2(
+        fx * features.cameraFrameTranslation.x / features.representativeDepthM,
+        fy * features.cameraFrameTranslation.y / features.representativeDepthM);
+    features.projectedMotionMagnitudePx = glm::length(features.projectedMotionPx);
+
+    features.valid =
+        std::isfinite(features.cameraFrameTranslation.x)
+        && std::isfinite(features.cameraFrameTranslation.y)
+        && std::isfinite(features.cameraFrameTranslation.z)
+        && std::isfinite(features.projectedMotionPx.x)
+        && std::isfinite(features.projectedMotionPx.y)
+        && std::isfinite(features.projectedMotionMagnitudePx);
+    return features;
+}
+
+struct ScreenSpaceFootprintFeatures {
+    bool valid = false;
+    glm::vec2 directionPx{1.0f, 0.0f};
+    float majorRadiusPx = 0.0f;
+    float minorRadiusPx = 0.0f;
+    int sampleCount = 0;
+};
+
+std::vector<float> parsePositiveFloatList(
+    const std::string& values,
+    const std::vector<float>& fallback)
+{
+    std::vector<float> parsed;
+    std::stringstream ss(values);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        try {
+            const float value = std::stof(token);
+            if (std::isfinite(value) && value > 0.0f) {
+                parsed.push_back(value);
+            }
+        }
+        catch (const std::exception&) {
+            spdlog::warn("Ignoring invalid positive-float-list token '{}'", token);
+        }
+    }
+
+    return parsed.empty() ? fallback : parsed;
+}
+
+ScreenSpaceFootprintFeatures computeScreenSpaceFootprintFeatures(
+    const glm::mat4& sourceViewMatrix,
+    const glm::mat4& targetViewMatrix,
+    const glm::mat4& projectionMatrix,
+    const glm::uvec2& viewportSize,
+    const std::vector<float>& representativeDepthsM,
+    float scale,
+    float maxRadiusPx)
+{
+    ScreenSpaceFootprintFeatures features;
+    if (viewportSize.x == 0 || viewportSize.y == 0 || representativeDepthsM.empty()) {
+        return features;
+    }
+
+    const float width = static_cast<float>(viewportSize.x);
+    const float height = static_cast<float>(viewportSize.y);
+    const glm::mat4 inverseSourceViewMatrix = glm::inverse(sourceViewMatrix);
+    const float safeScale = std::max(0.0f, scale);
+    const float maxRadius = maxRadiusPx > 0.0f ? maxRadiusPx : std::numeric_limits<float>::infinity();
+
+    const std::vector<glm::vec2> anchorsNdc = {
+        glm::vec2(0.0f, 0.0f),
+        glm::vec2(-0.9f, -0.9f),
+        glm::vec2(0.9f, -0.9f),
+        glm::vec2(-0.9f, 0.9f),
+        glm::vec2(0.9f, 0.9f),
+        glm::vec2(0.0f, -0.9f),
+        glm::vec2(0.0f, 0.9f),
+        glm::vec2(-0.9f, 0.0f),
+        glm::vec2(0.9f, 0.0f),
+    };
+
+    std::vector<glm::vec2> displacements;
+    displacements.reserve(anchorsNdc.size() * representativeDepthsM.size());
+    glm::vec2 dominantDisplacement(0.0f);
+    float dominantMagnitude = 0.0f;
+
+    for (const float depth : representativeDepthsM) {
+        const float safeDepth = std::max(0.01f, depth);
+        for (const glm::vec2& anchorNdc : anchorsNdc) {
+            const glm::vec4 sourceViewPosition(
+                anchorNdc.x * safeDepth / projectionMatrix[0][0],
+                anchorNdc.y * safeDepth / projectionMatrix[1][1],
+                -safeDepth,
+                1.0f);
+            const glm::vec4 sourceWorldPosition = inverseSourceViewMatrix * sourceViewPosition;
+            const glm::vec4 targetClipPosition = projectionMatrix * targetViewMatrix * sourceWorldPosition;
+            if (std::abs(targetClipPosition.w) <= 1e-5f) {
+                continue;
+            }
+
+            const glm::vec2 targetNdc = glm::vec2(targetClipPosition) / targetClipPosition.w;
+            if (!std::isfinite(targetNdc.x) || !std::isfinite(targetNdc.y)) {
+                continue;
+            }
+
+            const glm::vec2 sourcePixel(
+                (anchorNdc.x + 1.0f) * 0.5f * width,
+                (anchorNdc.y + 1.0f) * 0.5f * height);
+            const glm::vec2 targetPixel(
+                (targetNdc.x + 1.0f) * 0.5f * width,
+                (targetNdc.y + 1.0f) * 0.5f * height);
+            const glm::vec2 displacement = targetPixel - sourcePixel;
+            const float displacementMagnitude = glm::length(displacement);
+            if (!std::isfinite(displacementMagnitude)) {
+                continue;
+            }
+
+            displacements.push_back(displacement);
+            if (displacementMagnitude > dominantMagnitude) {
+                dominantMagnitude = displacementMagnitude;
+                dominantDisplacement = displacement;
+            }
+        }
+    }
+
+    if (displacements.empty() || dominantMagnitude <= 1e-4f) {
+        return features;
+    }
+
+    features.directionPx = glm::normalize(dominantDisplacement);
+    const glm::vec2 minorDirection(-features.directionPx.y, features.directionPx.x);
+    for (const glm::vec2& displacement : displacements) {
+        features.majorRadiusPx = std::max(features.majorRadiusPx, std::abs(glm::dot(displacement, features.directionPx)));
+        features.minorRadiusPx = std::max(features.minorRadiusPx, std::abs(glm::dot(displacement, minorDirection)));
+    }
+
+    features.majorRadiusPx = std::min(features.majorRadiusPx * safeScale, maxRadius);
+    features.minorRadiusPx = std::min(features.minorRadiusPx * safeScale, maxRadius);
+    features.sampleCount = static_cast<int>(displacements.size());
+    features.valid =
+        std::isfinite(features.majorRadiusPx)
+        && std::isfinite(features.minorRadiusPx)
+        && features.majorRadiusPx > 1e-4f;
+    return features;
+}
+
+int positiveZViewOffsetSampleCount(const glm::vec3& viewOffsetUncertaintyM) {
+    return viewOffsetUncertaintyM.z > 1e-5f
+        && glm::compMax(glm::abs(viewOffsetUncertaintyM)) > 1e-5f
+        ? 4
+        : 0;
+}
+
+std::string describeViewOffsetMode(const glm::vec3& viewOffsetUncertaintyM) {
+    if (glm::compMax(glm::abs(viewOffsetUncertaintyM)) <= 1e-5f) {
+        return "none";
+    }
+    if (viewOffsetUncertaintyM.z > 1e-5f) {
+        return "positive_z_samples";
+    }
+    if (viewOffsetUncertaintyM.z < -1e-5f) {
+        return "negative_z_scalar";
+    }
+    return "xy_only_scalar";
+}
+
+float uintBitsToFloat(uint32_t value) {
+    float result = 0.0f;
+    std::memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
+bool readRGBA32UITexture(const Texture& texture, std::vector<glm::uvec4>& pixels) {
+    pixels.resize(static_cast<size_t>(texture.width) * texture.height);
+
+    GLint previousReadFramebuffer = 0;
+    GLint previousReadBuffer = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+    glGetIntegerv(GL_READ_BUFFER, &previousReadBuffer);
+
+    GLuint readFramebuffer = 0;
+    glGenFramebuffers(1, &readFramebuffer);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebuffer);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture.ID, 0);
+
+    const GLenum status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        spdlog::warn("Failed to read RGBA32UI texture: framebuffer status={}", status);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+        glReadBuffer(static_cast<GLenum>(previousReadBuffer));
+        glDeleteFramebuffers(1, &readFramebuffer);
+        return false;
+    }
+
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(
+        0,
+        0,
+        texture.width,
+        texture.height,
+        GL_RGBA_INTEGER,
+        GL_UNSIGNED_INT,
+        pixels.data());
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+    glReadBuffer(static_cast<GLenum>(previousReadBuffer));
+    glDeleteFramebuffers(1, &readFramebuffer);
+    return true;
+}
+
+glm::vec3 sourceViewPosFromPixelAndDepth(
+    int x,
+    int y,
+    float depth,
+    uint width,
+    uint height,
+    const glm::mat4& projectionMatrix)
+{
+    const glm::vec2 ndc =
+        ((glm::vec2(static_cast<float>(x), static_cast<float>(y)) + glm::vec2(0.5f))
+         / glm::vec2(static_cast<float>(width), static_cast<float>(height)))
+        * 2.0f
+        - glm::vec2(1.0f);
+    return glm::vec3(
+        ndc.x * depth / projectionMatrix[0][0],
+        ndc.y * depth / projectionMatrix[1][1],
+        -depth);
+}
+
+float scalarEForViewOffsetDebug(
+    float dynamicE,
+    bool viewOffsetFootprintEnabled,
+    const glm::vec3& viewOffsetUncertaintyM,
+    const glm::vec3& blockerViewPos)
+{
+    if (!viewOffsetFootprintEnabled || viewOffsetUncertaintyM.z >= 0.0f) {
+        return dynamicE;
+    }
+    if (viewOffsetUncertaintyM.z < blockerViewPos.z) {
+        return dynamicE;
+    }
+
+    const float z2 = std::abs(blockerViewPos.z);
+    const float denominator = std::max(std::abs(blockerViewPos.z - viewOffsetUncertaintyM.z), 1e-5f);
+    const float frontMotionE =
+        z2
+        * (std::abs(viewOffsetUncertaintyM.x) + std::abs(blockerViewPos.x))
+        / denominator;
+
+    if (!std::isfinite(frontMotionE) || frontMotionE <= 0.0f) {
+        return dynamicE;
+    }
+    return frontMotionE;
+}
+
+struct DepthStats {
+    size_t count = 0;
+    float minNormalized = std::numeric_limits<float>::infinity();
+    float maxNormalized = -std::numeric_limits<float>::infinity();
+    double sumNormalized = 0.0;
+    float minViewDepthM = std::numeric_limits<float>::infinity();
+    float maxViewDepthM = -std::numeric_limits<float>::infinity();
+    double sumViewDepthM = 0.0;
+};
+
+void accumulateDepthStats(
+    DepthStats& stats,
+    float normalizedDepth,
+    float nearPlane,
+    float farPlane)
+{
+    if (!std::isfinite(normalizedDepth) || normalizedDepth <= 0.0f || normalizedDepth >= 0.9999f) {
+        return;
+    }
+
+    const float viewDepthM = glm::mix(nearPlane, farPlane, normalizedDepth);
+    if (!std::isfinite(viewDepthM)) {
+        return;
+    }
+
+    stats.count++;
+    stats.minNormalized = std::min(stats.minNormalized, normalizedDepth);
+    stats.maxNormalized = std::max(stats.maxNormalized, normalizedDepth);
+    stats.sumNormalized += normalizedDepth;
+    stats.minViewDepthM = std::min(stats.minViewDepthM, viewDepthM);
+    stats.maxViewDepthM = std::max(stats.maxViewDepthM, viewDepthM);
+    stats.sumViewDepthM += viewDepthM;
+}
+
+void dumpNormalRenderDepthStatsForRecordedFrame(
+    const DeferredRenderer& renderer,
+    const PerspectiveCamera& camera,
+    const Path& outputPath,
+    int recordedFrameID)
+{
+    std::vector<glm::uvec4> idPixels;
+    if (!readRGBA32UITexture(renderer.gBuffer.idTexture, idPixels)) {
+        spdlog::warn("Skipping normal-render depth stats for recorded frame {} because ID texture readback failed", recordedFrameID);
+        return;
+    }
+
+    DepthStats stats;
+    const float nearPlane = camera.getNear();
+    const float farPlane = camera.getFar();
+    for (const glm::uvec4& pixel : idPixels) {
+        accumulateDepthStats(stats, uintBitsToFloat(pixel.z), nearPlane, farPlane);
+    }
+
+    if (stats.count == 0) {
+        spdlog::warn("Skipping normal-render depth stats for recorded frame {} because no valid depth pixels were found", recordedFrameID);
+        return;
+    }
+
+    const Path csvPath = outputPath / "normal_render_depth_stats.csv";
+    const bool writeHeader = !csvPath.exists();
+    std::ofstream csv(csvPath.str(), std::ios::app);
+    if (writeHeader) {
+        csv << "recorded_frame_id,width,height,valid_pixels,"
+            << "near_m,far_m,"
+            << "min_depth_normalized,max_depth_normalized,avg_depth_normalized,"
+            << "min_view_depth_m,max_view_depth_m,avg_view_depth_m\n";
+    }
+
+    csv << std::setprecision(9)
+        << recordedFrameID << ","
+        << renderer.gBuffer.width << ","
+        << renderer.gBuffer.height << ","
+        << stats.count << ","
+        << nearPlane << ","
+        << farPlane << ","
+        << stats.minNormalized << ","
+        << stats.maxNormalized << ","
+        << (stats.sumNormalized / static_cast<double>(stats.count)) << ","
+        << stats.minViewDepthM << ","
+        << stats.maxViewDepthM << ","
+        << (stats.sumViewDepthM / static_cast<double>(stats.count))
+        << "\n";
+
+    spdlog::info(
+        "Normal-render ID depth stats for recorded frame {}: valid_pixels={}, normalized[min={:.9f}, max={:.9f}, avg={:.9f}], view_depth_m[min={:.6f}, max={:.6f}, avg={:.6f}]",
+        recordedFrameID,
+        stats.count,
+        stats.minNormalized,
+        stats.maxNormalized,
+        stats.sumNormalized / static_cast<double>(stats.count),
+        stats.minViewDepthM,
+        stats.maxViewDepthM,
+        stats.sumViewDepthM / static_cast<double>(stats.count));
+}
+
+void dumpDynamicEPerPixelForRemoteFrame(
+    const DepthPeelingRenderer& renderer,
+    const PerspectiveCamera& camera,
+    const Path& outputPath,
+    int remoteFrameID,
+    int recordedFrameID,
+    float dynamicE,
+    const glm::vec3& viewOffsetUncertaintyM)
+{
+    const uint width = renderer.width;
+    const uint height = renderer.height;
+    if (width == 0 || height == 0 || renderer.peelingLayers.size() < 2) {
+        spdlog::warn("Skipping DynamicE pixel dump for remote frame {} because renderer dimensions/layers are invalid", remoteFrameID);
+        return;
+    }
+
+    const Path dumpDir = outputPath / "dynamic_e_pixel_dump";
+    dumpDir.mkdirRecursive();
+
+    const std::string frameTag =
+        "remote_frame_" + std::to_string(remoteFrameID)
+        + (recordedFrameID >= 0 ? "_recorded_frame_" + std::to_string(recordedFrameID) : "");
+
+    const Path metadataPath = dumpDir / (frameTag + "_metadata.txt");
+    std::ofstream metadata(metadataPath.str());
+    metadata << "remote_frame_id=" << remoteFrameID << "\n";
+    metadata << "recorded_frame_id=" << recordedFrameID << "\n";
+    metadata << "width=" << width << "\n";
+    metadata << "height=" << height << "\n";
+    metadata << "row_order=OpenGL pixel coordinates, y=0 bottom row first\n";
+    metadata << "invalid_or_unused_pixels=nan\n";
+    metadata << "dynamic_e_m=" << std::setprecision(9) << dynamicE << "\n";
+    metadata << "view_offset_uncertainty_m=("
+             << viewOffsetUncertaintyM.x << ","
+             << viewOffsetUncertaintyM.y << ","
+             << viewOffsetUncertaintyM.z << ")\n";
+    metadata << "mode=" << describeViewOffsetMode(viewOffsetUncertaintyM) << "\n";
+    metadata << "layer_file_semantics=layer_N uses prevIDMap from depth-peeling layer_N_minus_1, matching depth_peeling.glsl\n";
+
+    const glm::mat4& projectionMatrix = camera.getProjectionMatrix();
+    const float cameraNear = camera.getNear();
+    const float cameraFar = camera.getFar();
+    const float maxDepth = 0.9999f;
+
+    for (size_t layer = 1; layer < renderer.peelingLayers.size(); ++layer) {
+        std::vector<glm::uvec4> prevIDMap;
+        const Texture& prevIDTexture = renderer.peelingLayers[layer - 1].idTexture;
+        if (!readRGBA32UITexture(prevIDTexture, prevIDMap)) {
+            continue;
+        }
+
+        const Path csvPath = dumpDir / (frameTag + "_layer_" + std::to_string(layer) + "_dynamic_e_m.csv");
+        std::ofstream csv(csvPath.str());
+        csv << std::setprecision(9);
+
+        size_t validPixelCount = 0;
+        float minE = std::numeric_limits<float>::infinity();
+        float maxE = 0.0f;
+        double sumE = 0.0;
+
+        for (uint y = 0; y < height; ++y) {
+            for (uint x = 0; x < width; ++x) {
+                if (x > 0) {
+                    csv << ",";
+                }
+
+                const glm::uvec4 q = prevIDMap[static_cast<size_t>(y) * width + x];
+                const float blockerDepthNormalized = uintBitsToFloat(q.z);
+                if (blockerDepthNormalized == 0.0f || blockerDepthNormalized >= maxDepth) {
+                    csv << "nan";
+                    continue;
+                }
+
+                const float blockerDepth = glm::mix(cameraNear, cameraFar, blockerDepthNormalized);
+                const glm::vec3 blockerViewPos = sourceViewPosFromPixelAndDepth(
+                    static_cast<int>(x),
+                    static_cast<int>(y),
+                    blockerDepth,
+                    width,
+                    height,
+                    projectionMatrix);
+                const float effectiveE = scalarEForViewOffsetDebug(
+                    dynamicE,
+                    renderer.eViewOffsetFootprint,
+                    viewOffsetUncertaintyM,
+                    blockerViewPos);
+
+                csv << effectiveE;
+                validPixelCount++;
+                minE = std::min(minE, effectiveE);
+                maxE = std::max(maxE, effectiveE);
+                sumE += effectiveE;
+            }
+            csv << "\n";
+        }
+
+        metadata << "layer_" << layer << "_csv=" << csvPath.name() << "\n";
+        metadata << "layer_" << layer << "_valid_pixels=" << validPixelCount << "\n";
+        if (validPixelCount > 0) {
+            metadata << "layer_" << layer << "_min_e_m=" << minE << "\n";
+            metadata << "layer_" << layer << "_max_e_m=" << maxE << "\n";
+            metadata << "layer_" << layer << "_mean_e_m=" << (sumE / static_cast<double>(validPixelCount)) << "\n";
+        }
+    }
+
+    spdlog::info(
+        "Dumped per-pixel DynamicE matrices for remote frame {} to {}",
+        remoteFrameID,
+        dumpDir.absolutePathStr());
+}
+
 glm::vec2 computeScreenMotionDirectionPx(
     const glm::mat4& previousViewMatrix,
     const glm::mat4& currentViewMatrix,
@@ -251,6 +751,11 @@ int main(int argc, char** argv) {
         "dynamic-edp-e",
         "Drive depth-peeling E from pose prediction uncertainty instead of always using viewSphereDiameter / 2",
         {"dynamic-edp-e"});
+    args::Flag dynamicEdpEGroundTruthErrorIn(
+        parser,
+        "dynamic-edp-e-ground-truth-error",
+        "Drive dynamic depth-peeling E from the actual remote-vs-recorded pose error for offline/oracle analysis",
+        {"dynamic-edp-e-ground-truth-error"});
     args::ValueFlag<float> dynamicEdpEMinIn(
         parser,
         "meters",
@@ -280,12 +785,87 @@ int main(int argc, char** argv) {
         "dynamic-edp-e-directional",
         "Use the full dynamic E along apparent screen-space motion and a smaller E perpendicular to it",
         {"dynamic-edp-e-directional"});
+    args::Flag dynamicEdpEMotionDirectionIn(
+        parser,
+        "dynamic-edp-e-motion-direction",
+        "Use projected source->target camera-frame translation as the EDP anisotropy direction",
+        {"dynamic-edp-e-motion-direction"});
+    args::ValueFlag<float> dynamicEdpEMotionRepresentativeDepthIn(
+        parser,
+        "meters",
+        "Representative depth used to project camera-frame translation into screen-space motion",
+        {"dynamic-edp-e-motion-representative-depth"},
+        1.0f);
+    args::ValueFlag<float> dynamicEdpEMotionBoostThresholdPxIn(
+        parser,
+        "pixels",
+        "If positive, projected motion above this threshold boosts dynamic E; disabled when <= 0",
+        {"dynamic-edp-e-motion-boost-threshold-px"},
+        -1.0f);
+    args::ValueFlag<float> dynamicEdpEMotionBoostScaleIn(
+        parser,
+        "scale",
+        "Scale applied to thresholded projected-motion feature when boosting dynamic E",
+        {"dynamic-edp-e-motion-boost-scale"},
+        0.0f);
+    args::ValueFlag<float> dynamicEdpEMotionBoostMaxIn(
+        parser,
+        "scale",
+        "Maximum additive E boost factor from projected-motion features",
+        {"dynamic-edp-e-motion-boost-max"},
+        1.0f);
+    args::Flag dynamicEdpEScreenSpaceFootprintIn(
+        parser,
+        "dynamic-edp-e-screen-space-footprint",
+        "Estimate a screen-space pose-error footprint and use it to enlarge the EDP sampling ellipse",
+        {"dynamic-edp-e-screen-space-footprint"});
+    args::ValueFlag<std::string> dynamicEdpEScreenSpaceDepthsIn(
+        parser,
+        "meters_csv",
+        "Comma-separated representative depths used for screen-space EDP footprint projection",
+        {"dynamic-edp-e-screen-space-depths"},
+        "1,2,5,10");
+    args::ValueFlag<float> dynamicEdpEScreenSpaceScaleIn(
+        parser,
+        "scale",
+        "Scale applied to the projected screen-space EDP footprint radii",
+        {"dynamic-edp-e-screen-space-scale"},
+        1.0f);
+    args::ValueFlag<float> dynamicEdpEScreenSpaceMaxPxIn(
+        parser,
+        "pixels",
+        "Maximum screen-space EDP footprint radius in pixels; negative means unclamped",
+        {"dynamic-edp-e-screen-space-max-px"},
+        -1.0f);
+    args::Flag dynamicEdpEViewOffsetFootprintIn(
+        parser,
+        "dynamic-edp-e-view-offset-footprint",
+        "Use 4 positive-z view-space uncertainty offset samples for EDP, plus scalar DynamicE/LCOC fallback",
+        {"dynamic-edp-e-view-offset-footprint", "dynamic-edp-e-pose-sample-footprint"});
     args::ValueFlag<float> dynamicEdpENonMotionScaleIn(
         parser,
         "scale",
         "Perpendicular scale for directional dynamic E, where 1 keeps the circular EDP radius",
         {"dynamic-edp-e-non-motion-scale"},
         0.5f);
+    args::ValueFlag<int> dumpDynamicEFrameIn(
+        parser,
+        "remote_frame_id",
+        "Dump per-pixel effective DynamicE matrices for this QUASAR remote frame id; disabled when < 0",
+        {"dump-dynamic-e-frame"},
+        -1);
+    args::ValueFlag<int> dumpDynamicERecordedFrameIn(
+        parser,
+        "recorded_frame_id",
+        "Recorded frame id label to include in per-pixel DynamicE dump filenames",
+        {"dump-dynamic-e-recorded-frame"},
+        -1);
+    args::ValueFlag<int> dumpNormalRenderDepthStatsFrameIn(
+        parser,
+        "recorded_frame_id",
+        "Render the original scene at this recorded client frame and dump normal-render ID-depth stats; disabled when < 0",
+        {"dump-normal-render-depth-stats-frame"},
+        -1);
     args::ValueFlag<int> wideFovPoseLagFramesIn(parser, "wide-fov-pose-lag", "Wide-FOV layer renders with camera view from this many frames ago", {'L', "wide-fov-pose-lag"}, 0);
     args::ValueFlag<int> wideFovUpdatePeriodIn(parser, "wide-fov-update-period", "Regenerate wide-FOV layer only when frameID mod N == 0 (1 = every frame)", {'K', "wide-fov-update-period"}, 1);
     args::ValueFlag<std::string> wideFovDumpDirIn(parser, "path", "Dump wide-FOV tonemapped PNG per frame to this folder (empty = off)", {"wide-fov-dump-dir"}, "");
@@ -456,8 +1036,25 @@ int main(int argc, char** argv) {
     const float dynamicEdpEPositionScale = std::max(0.0f, args::get(dynamicEdpEPositionScaleIn));
     const float dynamicEdpERotationLeverArm = std::max(0.0f, args::get(dynamicEdpERotationLeverArmIn));
     const bool dynamicEdpEDirectional = args::get(dynamicEdpEDirectionalIn);
+    const bool dynamicEdpEGroundTruthError = args::get(dynamicEdpEGroundTruthErrorIn);
+    const bool dynamicEdpEMotionDirection = args::get(dynamicEdpEMotionDirectionIn);
+    const float dynamicEdpEMotionRepresentativeDepth =
+        std::max(0.01f, args::get(dynamicEdpEMotionRepresentativeDepthIn));
+    const float dynamicEdpEMotionBoostThresholdPx = args::get(dynamicEdpEMotionBoostThresholdPxIn);
+    const float dynamicEdpEMotionBoostScale = std::max(0.0f, args::get(dynamicEdpEMotionBoostScaleIn));
+    const float dynamicEdpEMotionBoostMax = std::max(0.0f, args::get(dynamicEdpEMotionBoostMaxIn));
+    const bool dynamicEdpEScreenSpaceFootprint = args::get(dynamicEdpEScreenSpaceFootprintIn);
+    const std::vector<float> dynamicEdpEScreenSpaceDepths = parsePositiveFloatList(
+        args::get(dynamicEdpEScreenSpaceDepthsIn),
+        std::vector<float>{dynamicEdpEMotionRepresentativeDepth});
+    const float dynamicEdpEScreenSpaceScale = std::max(0.0f, args::get(dynamicEdpEScreenSpaceScaleIn));
+    const float dynamicEdpEScreenSpaceMaxPx = args::get(dynamicEdpEScreenSpaceMaxPxIn);
+    const bool dynamicEdpEViewOffsetFootprint = args::get(dynamicEdpEViewOffsetFootprintIn);
     const float dynamicEdpENonMotionScale =
         glm::clamp(args::get(dynamicEdpENonMotionScaleIn), 0.0f, 1.0f);
+    const int dumpDynamicEFrame = args::get(dumpDynamicEFrameIn);
+    const int dumpDynamicERecordedFrame = args::get(dumpDynamicERecordedFrameIn);
+    const int dumpNormalRenderDepthStatsFrame = args::get(dumpNormalRenderDepthStatsFrameIn);
     int wideFovPoseLagArg = args::get(wideFovPoseLagFramesIn);
     uint wideFovPoseLagFrames = static_cast<uint>(wideFovPoseLagArg < 0 ? 0 : wideFovPoseLagArg);
 
@@ -476,6 +1073,46 @@ int main(int argc, char** argv) {
                 "Directional dynamic EDP E: enabled, perpendicular_scale={:.3f}",
                 dynamicEdpENonMotionScale);
         }
+        if (dynamicEdpEGroundTruthError) {
+            spdlog::info("Dynamic EDP E source: ground-truth remote-vs-recorded pose error");
+        }
+        if (dynamicEdpEMotionDirection) {
+            spdlog::info(
+                "Dynamic EDP E motion features: enabled, representative_depth={:.3f}m, boost_threshold={:.3f}px, boost_scale={:.3f}, boost_max={:.3f}",
+                dynamicEdpEMotionRepresentativeDepth,
+                dynamicEdpEMotionBoostThresholdPx,
+                dynamicEdpEMotionBoostScale,
+                dynamicEdpEMotionBoostMax);
+        }
+        if (dynamicEdpEScreenSpaceFootprint) {
+            std::stringstream depthList;
+            for (size_t i = 0; i < dynamicEdpEScreenSpaceDepths.size(); ++i) {
+                if (i > 0) {
+                    depthList << ",";
+                }
+                depthList << dynamicEdpEScreenSpaceDepths[i];
+            }
+            spdlog::info(
+                "Dynamic EDP E screen-space footprint: enabled, depths=[{}]m, scale={:.3f}, max_radius_px={:.3f}",
+                depthList.str(),
+                dynamicEdpEScreenSpaceScale,
+                dynamicEdpEScreenSpaceMaxPx);
+        }
+        if (dynamicEdpEViewOffsetFootprint) {
+            spdlog::info(
+                "Dynamic EDP E view-offset footprint: enabled, using 4 positive-z source-view offset samples plus scalar DynamicE fallback");
+        }
+        if (dumpDynamicEFrame >= 0) {
+            spdlog::info(
+                "Per-pixel DynamicE dump: enabled for remote frame {}, recorded-frame label {}",
+                dumpDynamicEFrame,
+                dumpDynamicERecordedFrame);
+        }
+    }
+    if (dumpNormalRenderDepthStatsFrame >= 0) {
+        spdlog::info(
+            "Normal-render depth stats dump: enabled for recorded frame {}",
+            dumpNormalRenderDepthStatsFrame);
     }
 
     // hardcode wide fov pose lag frames to 1
@@ -543,7 +1180,19 @@ int main(int argc, char** argv) {
         << "recorded_frame_id,prediction_used,"
         << "latest_pose_timestamp_us,prev_pose_timestamp_us,prev_but_two_pose_timestamp_us,predicted_pose_timestamp_us,"
         << "position_uncertainty_m,rotation_uncertainty_rad,dynamic_edp_e_m,"
-        << "dynamic_edp_direction_x,dynamic_edp_direction_y,dynamic_edp_perpendicular_scale"
+        << "dynamic_edp_direction_x,dynamic_edp_direction_y,dynamic_edp_perpendicular_scale,"
+        << "groundtruth_position_error_m,groundtruth_rotation_error_rad,dynamic_edp_e_source,"
+        << "groundtruth_target_source,groundtruth_target_x_m,groundtruth_target_y_m,groundtruth_target_z_m,"
+        << "prediction_position_uncertainty_view_x_m,prediction_position_uncertainty_view_y_m,prediction_position_uncertainty_view_z_m,"
+        << "groundtruth_position_error_view_x_m,groundtruth_position_error_view_y_m,groundtruth_position_error_view_z_m,"
+        << "view_offset_uncertainty_x_m,view_offset_uncertainty_y_m,view_offset_uncertainty_z_m,"
+        << "view_offset_mode,"
+        << "motion_delta_cam_x_m,motion_delta_cam_y_m,motion_delta_cam_z_m,"
+        << "motion_projected_dx_px,motion_projected_dy_px,motion_projected_magnitude_px,"
+        << "motion_representative_depth_m,motion_e_boost_factor,"
+        << "screen_footprint_major_radius_px,screen_footprint_minor_radius_px,"
+        << "screen_footprint_direction_x,screen_footprint_direction_y,screen_footprint_sample_count,"
+        << "view_offset_sample_count"
         << std::endl;
     std::ofstream recordedFramePoseFile((outputPath / "recorded_frame_render_poses.csv").str());
     recordedFramePoseFile
@@ -895,6 +1544,18 @@ int main(int argc, char** argv) {
     float currentDynamicEdpE = baseEdpERadius;
     glm::vec2 currentDynamicEdpDirectionPx(0.0f);
     float currentDynamicEdpNonMotionScale = 1.0f;
+    float currentGroundTruthPositionErrorM = 0.0f;
+    float currentGroundTruthRotationErrorRad = 0.0f;
+    std::string currentDynamicEdpESource = "base";
+    MotionProjectionFeatures currentMotionProjectionFeatures;
+    float currentMotionEBoostFactor = 1.0f;
+    ScreenSpaceFootprintFeatures currentScreenSpaceFootprintFeatures;
+    glm::vec3 currentPredictionPositionUncertaintyViewM{0.0f};
+    glm::vec3 currentGroundTruthPositionErrorViewM{0.0f};
+    PoseCsvInfo currentGroundTruthTargetPoseInfo;
+    std::string currentGroundTruthTargetSource = "current_camera";
+    glm::vec3 currentViewOffsetUncertaintyM{0.0f};
+    int currentViewOffsetSampleCount = 0;
     glm::mat4 previousDynamicEdpViewMatrix = remoteCamera.getViewMatrix();
     bool hasPreviousDynamicEdpViewMatrix = false;
     int nonDumpedRecordedFrameID = 0;
@@ -1082,22 +1743,146 @@ int main(int argc, char** argv) {
                 currentDynamicEdpE = baseEdpERadius;
                 currentDynamicEdpDirectionPx = glm::vec2(0.0f);
                 currentDynamicEdpNonMotionScale = 1.0f;
-                if (activePredictionDebugInfo.valid && activePredictionDebugInfo.usedPrediction) {
+                currentGroundTruthPositionErrorM = 0.0f;
+                currentGroundTruthRotationErrorRad = 0.0f;
+                currentMotionProjectionFeatures = {};
+                currentMotionEBoostFactor = 1.0f;
+                currentScreenSpaceFootprintFeatures = {};
+                currentPredictionPositionUncertaintyViewM = glm::vec3(0.0f);
+                currentGroundTruthPositionErrorViewM = glm::vec3(0.0f);
+                currentGroundTruthTargetPoseInfo = extractPoseCsvInfoFromViewMatrix(camera.getViewMatrix());
+                currentGroundTruthTargetSource = "current_camera";
+                if (cameraPathFileIn) {
+                    if (const auto nextPose = cameraAnimator.getNextPose()) {
+                        currentGroundTruthTargetPoseInfo = poseCsvInfoFromAnimatorPose(*nextPose);
+                        currentGroundTruthTargetSource = "next_render_pose";
+                    }
+                }
+                currentViewOffsetUncertaintyM = glm::vec3(0.0f);
+                currentViewOffsetSampleCount = 0;
+                currentDynamicEdpESource = "base";
+                remoteRendererDP.clearEScreenSpaceFootprint();
+                remoteRendererDP.clearEViewOffsetFootprint();
+                const glm::mat4& dynamicEdpSourceViewMatrix = remoteCamera.getViewMatrix();
+                if (dynamicEdpEGroundTruthError) {
+                    const PoseCsvInfo remoteRenderPoseInfo =
+                        extractPoseCsvInfoFromViewMatrix(remoteCamera.getViewMatrix());
+                    currentGroundTruthPositionErrorM =
+                        glm::length(remoteRenderPoseInfo.position - currentGroundTruthTargetPoseInfo.position);
+                    currentGroundTruthRotationErrorRad =
+                        quaternionAngularDistanceRad(
+                            remoteRenderPoseInfo.rotationQuat,
+                            currentGroundTruthTargetPoseInfo.rotationQuat);
+                    currentGroundTruthPositionErrorViewM =
+                        glm::inverse(remoteRenderPoseInfo.rotationQuat)
+                        * (currentGroundTruthTargetPoseInfo.position - remoteRenderPoseInfo.position);
+                    currentViewOffsetUncertaintyM =
+                        dynamicEdpEPositionScale * currentGroundTruthPositionErrorViewM;
+                    const float groundTruthErrorM =
+                        dynamicEdpEPositionScale * currentGroundTruthPositionErrorM
+                        + dynamicEdpERotationLeverArm * currentGroundTruthRotationErrorRad;
+                    currentDynamicEdpE = glm::clamp(groundTruthErrorM, dynamicEdpEMin, dynamicEdpEMax);
+                    currentDynamicEdpESource = "groundtruth";
+                }
+                else if (activePredictionDebugInfo.valid && activePredictionDebugInfo.usedPrediction) {
                     const float predictionUncertaintyM =
                         dynamicEdpEPositionScale * activePredictionDebugInfo.predictionPositionUncertaintyM
                         + dynamicEdpERotationLeverArm * activePredictionDebugInfo.predictionRotationUncertaintyRad;
                     currentDynamicEdpE = glm::clamp(predictionUncertaintyM, dynamicEdpEMin, dynamicEdpEMax);
+                    currentDynamicEdpESource = dynamicEdpEGroundTruthError ? "prediction_fallback" : "prediction";
+                    currentPredictionPositionUncertaintyViewM =
+                        activePredictionDebugInfo.predictionPositionUncertaintyViewM;
+                    currentViewOffsetUncertaintyM =
+                        dynamicEdpEPositionScale
+                        * currentPredictionPositionUncertaintyViewM;
                 }
-                remoteRendererDP.setEOverride(currentDynamicEdpE);
-                if (dynamicEdpEDirectional && hasPreviousDynamicEdpViewMatrix) {
-                    currentDynamicEdpDirectionPx = computeScreenMotionDirectionPx(
-                        previousDynamicEdpViewMatrix,
-                        remoteCamera.getViewMatrix(),
+                if (dynamicEdpEMotionDirection) {
+                    currentMotionProjectionFeatures = computeMotionProjectionFeatures(
+                        dynamicEdpSourceViewMatrix,
+                        camera.getViewMatrix(),
                         remoteCamera.getProjectionMatrix(),
                         remoteWindowSize,
-                        std::max(0.01f, dynamicEdpERotationLeverArm));
+                        dynamicEdpEMotionRepresentativeDepth);
+                    if (currentMotionProjectionFeatures.valid
+                        && dynamicEdpEMotionBoostThresholdPx > 0.0f
+                        && dynamicEdpEMotionBoostScale > 0.0f
+                        && currentMotionProjectionFeatures.projectedMotionMagnitudePx > dynamicEdpEMotionBoostThresholdPx)
+                    {
+                        const float normalizedExcess =
+                            (currentMotionProjectionFeatures.projectedMotionMagnitudePx - dynamicEdpEMotionBoostThresholdPx)
+                            / dynamicEdpEMotionBoostThresholdPx;
+                        const float additiveBoost = std::min(
+                            dynamicEdpEMotionBoostMax,
+                            dynamicEdpEMotionBoostScale * normalizedExcess);
+                        currentMotionEBoostFactor = 1.0f + additiveBoost;
+                        currentDynamicEdpE = glm::clamp(
+                            currentDynamicEdpE * currentMotionEBoostFactor,
+                            dynamicEdpEMin,
+                            dynamicEdpEMax);
+                        currentDynamicEdpESource += "_motion_boost";
+                    }
+                }
+                if (dynamicEdpEScreenSpaceFootprint) {
+                    currentScreenSpaceFootprintFeatures = computeScreenSpaceFootprintFeatures(
+                        dynamicEdpSourceViewMatrix,
+                        camera.getViewMatrix(),
+                        remoteCamera.getProjectionMatrix(),
+                        remoteWindowSize,
+                        dynamicEdpEScreenSpaceDepths,
+                        dynamicEdpEScreenSpaceScale,
+                        dynamicEdpEScreenSpaceMaxPx);
+                    if (currentScreenSpaceFootprintFeatures.valid) {
+                        remoteRendererDP.setEScreenSpaceFootprint(
+                            currentScreenSpaceFootprintFeatures.majorRadiusPx,
+                            currentScreenSpaceFootprintFeatures.minorRadiusPx);
+                        currentDynamicEdpESource += "_screen_footprint";
+                    }
+                    else {
+                        remoteRendererDP.clearEScreenSpaceFootprint();
+                    }
+                }
+                if (dynamicEdpEViewOffsetFootprint) {
+                    remoteRendererDP.setEViewOffsetFootprint(currentViewOffsetUncertaintyM);
+                    currentViewOffsetSampleCount =
+                        positiveZViewOffsetSampleCount(currentViewOffsetUncertaintyM);
+                    if (currentViewOffsetSampleCount > 0) {
+                        currentDynamicEdpESource += "_view_offset_footprint";
+                    }
+                }
+                remoteRendererDP.setEOverride(currentDynamicEdpE);
+                const bool screenSpaceFootprintHasDirection =
+                    currentScreenSpaceFootprintFeatures.valid
+                    && glm::length(currentScreenSpaceFootprintFeatures.directionPx) > 1e-4f;
+                if ((dynamicEdpEDirectional && (hasPreviousDynamicEdpViewMatrix || dynamicEdpEMotionDirection || screenSpaceFootprintHasDirection))
+                    || (dynamicEdpEDirectional && dynamicEdpEViewOffsetFootprint)
+                    || screenSpaceFootprintHasDirection)
+                {
+                    if (screenSpaceFootprintHasDirection) {
+                        currentDynamicEdpDirectionPx =
+                            glm::normalize(currentScreenSpaceFootprintFeatures.directionPx);
+                    }
+                    else if (dynamicEdpEMotionDirection
+                        && currentMotionProjectionFeatures.valid
+                        && currentMotionProjectionFeatures.projectedMotionMagnitudePx > 1e-4f)
+                    {
+                        currentDynamicEdpDirectionPx =
+                            glm::normalize(currentMotionProjectionFeatures.projectedMotionPx);
+                    }
+                    else if (dynamicEdpEViewOffsetFootprint) {
+                        currentDynamicEdpDirectionPx = glm::vec2(1.0f, 0.0f);
+                    }
+                    else {
+                        currentDynamicEdpDirectionPx = computeScreenMotionDirectionPx(
+                            previousDynamicEdpViewMatrix,
+                            remoteCamera.getViewMatrix(),
+                            remoteCamera.getProjectionMatrix(),
+                            remoteWindowSize,
+                            std::max(0.01f, dynamicEdpERotationLeverArm));
+                    }
                     if (glm::length(currentDynamicEdpDirectionPx) > 1e-4f) {
-                        currentDynamicEdpNonMotionScale = dynamicEdpENonMotionScale;
+                        currentDynamicEdpNonMotionScale = dynamicEdpEDirectional
+                            ? dynamicEdpENonMotionScale
+                            : 1.0f;
                         remoteRendererDP.setEAnisotropy(currentDynamicEdpDirectionPx, currentDynamicEdpNonMotionScale);
                     }
                     else {
@@ -1108,22 +1893,66 @@ int main(int argc, char** argv) {
                     remoteRendererDP.clearEAnisotropy();
                 }
                 spdlog::info(
-                    "Dynamic EDP E for QUASAR frame {}: E={:.6f}m, base={:.6f}m, pos_uncertainty={:.6f}m, rot_uncertainty={:.6f}rad, direction=({:.3f}, {:.3f}), perpendicular_scale={:.3f}",
+                    "Dynamic EDP E for QUASAR frame {}: E={:.6f}m, base={:.6f}m, source={}, pos_uncertainty={:.6f}m, rot_uncertainty={:.6f}rad, gt_pos_error={:.6f}m, gt_rot_error={:.6f}rad, view_offset_uncertainty=({:.6f}, {:.6f}, {:.6f})m, motion_projected=({:.3f}, {:.3f})px, motion_mag={:.3f}px, motion_boost={:.3f}, screen_footprint=({:.3f}, {:.3f})px, view_offset_sample_count={}, direction=({:.3f}, {:.3f}), perpendicular_scale={:.3f}",
                     quasar.frameID + 1,
                     currentDynamicEdpE,
                     baseEdpERadius,
+                    currentDynamicEdpESource,
                     activePredictionDebugInfo.predictionPositionUncertaintyM,
                     activePredictionDebugInfo.predictionRotationUncertaintyRad,
+                    currentGroundTruthPositionErrorM,
+                    currentGroundTruthRotationErrorRad,
+                    currentViewOffsetUncertaintyM.x,
+                    currentViewOffsetUncertaintyM.y,
+                    currentViewOffsetUncertaintyM.z,
+                    currentMotionProjectionFeatures.projectedMotionPx.x,
+                    currentMotionProjectionFeatures.projectedMotionPx.y,
+                    currentMotionProjectionFeatures.projectedMotionMagnitudePx,
+                    currentMotionEBoostFactor,
+                    currentScreenSpaceFootprintFeatures.majorRadiusPx,
+                    currentScreenSpaceFootprintFeatures.minorRadiusPx,
+                    currentViewOffsetSampleCount,
                     currentDynamicEdpDirectionPx.x,
                     currentDynamicEdpDirectionPx.y,
                     currentDynamicEdpNonMotionScale);
+                spdlog::info(
+                    "Dynamic EDP E offset debug for QUASAR frame {}: mode={}, gt_target_source={}, gt_target_pos=({:.6f}, {:.6f}, {:.6f})m, prediction_view_uncertainty=({:.6f}, {:.6f}, {:.6f})m, groundtruth_view_error=({:.6f}, {:.6f}, {:.6f})m, scaled_shader_offset=({:.6f}, {:.6f}, {:.6f})m",
+                    quasar.frameID + 1,
+                    describeViewOffsetMode(currentViewOffsetUncertaintyM),
+                    currentGroundTruthTargetSource,
+                    currentGroundTruthTargetPoseInfo.position.x,
+                    currentGroundTruthTargetPoseInfo.position.y,
+                    currentGroundTruthTargetPoseInfo.position.z,
+                    currentPredictionPositionUncertaintyViewM.x,
+                    currentPredictionPositionUncertaintyViewM.y,
+                    currentPredictionPositionUncertaintyViewM.z,
+                    currentGroundTruthPositionErrorViewM.x,
+                    currentGroundTruthPositionErrorViewM.y,
+                    currentGroundTruthPositionErrorViewM.z,
+                    currentViewOffsetUncertaintyM.x,
+                    currentViewOffsetUncertaintyM.y,
+                    currentViewOffsetUncertaintyM.z);
             }
             else {
                 currentDynamicEdpE = baseEdpERadius;
                 currentDynamicEdpDirectionPx = glm::vec2(0.0f);
                 currentDynamicEdpNonMotionScale = 1.0f;
+                currentGroundTruthPositionErrorM = 0.0f;
+                currentGroundTruthRotationErrorRad = 0.0f;
+                currentMotionProjectionFeatures = {};
+                currentMotionEBoostFactor = 1.0f;
+                currentScreenSpaceFootprintFeatures = {};
+                currentPredictionPositionUncertaintyViewM = glm::vec3(0.0f);
+                currentGroundTruthPositionErrorViewM = glm::vec3(0.0f);
+                currentGroundTruthTargetPoseInfo = extractPoseCsvInfoFromViewMatrix(camera.getViewMatrix());
+                currentGroundTruthTargetSource = "current_camera";
+                currentViewOffsetUncertaintyM = glm::vec3(0.0f);
+                currentViewOffsetSampleCount = 0;
+                currentDynamicEdpESource = "disabled";
                 remoteRendererDP.clearEOverride();
                 remoteRendererDP.clearEAnisotropy();
+                remoteRendererDP.clearEScreenSpaceFootprint();
+                remoteRendererDP.clearEViewOffsetFootprint();
             }
 
             quasar.generateFrame(
@@ -1131,6 +1960,16 @@ int main(int argc, char** argv) {
                 showNormals,
                 showDepth,
                 wideFovGroundTruthView);
+            if (dumpDynamicEFrame >= 0 && quasar.frameID == dumpDynamicEFrame) {
+                dumpDynamicEPerPixelForRemoteFrame(
+                    remoteRendererDP,
+                    remoteCamera,
+                    outputPath,
+                    quasar.frameID,
+                    dumpDynamicERecordedFrame,
+                    currentDynamicEdpE,
+                    currentViewOffsetUncertaintyM);
+            }
             previousDynamicEdpViewMatrix = remoteCamera.getViewMatrix();
             hasPreviousDynamicEdpViewMatrix = true;
             quasar.sendFrame(PoseReceiver::PoseInfo{0, 0, 0}, sendResidualFrame);
@@ -1276,7 +2115,38 @@ int main(int argc, char** argv) {
                 << currentDynamicEdpE << ","
                 << currentDynamicEdpDirectionPx.x << ","
                 << currentDynamicEdpDirectionPx.y << ","
-                << currentDynamicEdpNonMotionScale
+                << currentDynamicEdpNonMotionScale << ","
+                << currentGroundTruthPositionErrorM << ","
+                << currentGroundTruthRotationErrorRad << ","
+                << currentDynamicEdpESource << ","
+                << currentGroundTruthTargetSource << ","
+                << currentGroundTruthTargetPoseInfo.position.x << ","
+                << currentGroundTruthTargetPoseInfo.position.y << ","
+                << currentGroundTruthTargetPoseInfo.position.z << ","
+                << currentPredictionPositionUncertaintyViewM.x << ","
+                << currentPredictionPositionUncertaintyViewM.y << ","
+                << currentPredictionPositionUncertaintyViewM.z << ","
+                << currentGroundTruthPositionErrorViewM.x << ","
+                << currentGroundTruthPositionErrorViewM.y << ","
+                << currentGroundTruthPositionErrorViewM.z << ","
+                << currentViewOffsetUncertaintyM.x << ","
+                << currentViewOffsetUncertaintyM.y << ","
+                << currentViewOffsetUncertaintyM.z << ","
+                << describeViewOffsetMode(currentViewOffsetUncertaintyM) << ","
+                << currentMotionProjectionFeatures.cameraFrameTranslation.x << ","
+                << currentMotionProjectionFeatures.cameraFrameTranslation.y << ","
+                << currentMotionProjectionFeatures.cameraFrameTranslation.z << ","
+                << currentMotionProjectionFeatures.projectedMotionPx.x << ","
+                << currentMotionProjectionFeatures.projectedMotionPx.y << ","
+                << currentMotionProjectionFeatures.projectedMotionMagnitudePx << ","
+                << currentMotionProjectionFeatures.representativeDepthM << ","
+                << currentMotionEBoostFactor << ","
+                << currentScreenSpaceFootprintFeatures.majorRadiusPx << ","
+                << currentScreenSpaceFootprintFeatures.minorRadiusPx << ","
+                << currentScreenSpaceFootprintFeatures.directionPx.x << ","
+                << currentScreenSpaceFootprintFeatures.directionPx.y << ","
+                << currentScreenSpaceFootprintFeatures.sampleCount << ","
+                << currentViewOffsetSampleCount
                 << std::endl;
 
             const glm::quat recordedFrameRotationQuat = glm::normalize(camera.getRotationQuat());
@@ -1332,6 +2202,10 @@ int main(int argc, char** argv) {
             const int recordedFrameID = frameDumpEnabled ? recorder.getNextFrameID() : nonDumpedRecordedFrameID++;
             dumpPosePredictionAndRecordedPoseCsvRows(recordedFrameID);
             dumpWideFovTexelUsageForCapture(recordedFrameID);
+            if (recordedFrameID == dumpNormalRenderDepthStatsFrame) {
+                remoteRenderer.drawObjectsNoLighting(remoteScene, camera);
+                dumpNormalRenderDepthStatsForRecordedFrame(remoteRenderer, camera, outputPath, recordedFrameID);
+            }
             if (frameDumpEnabled) {
                 recorder.captureFrame(camera);
             }
@@ -1346,6 +2220,10 @@ int main(int argc, char** argv) {
             const int recordedFrameID = recorder.getNextFrameID();
             dumpPosePredictionAndRecordedPoseCsvRows(recordedFrameID);
             dumpWideFovTexelUsageForCapture(recordedFrameID);
+            if (recordedFrameID == dumpNormalRenderDepthStatsFrame) {
+                remoteRenderer.drawObjectsNoLighting(remoteScene, camera);
+                dumpNormalRenderDepthStatsForRecordedFrame(remoteRenderer, camera, outputPath, recordedFrameID);
+            }
             recorder.captureFrame(camera);
         }
     });
